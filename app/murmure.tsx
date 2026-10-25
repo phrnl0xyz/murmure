@@ -26,6 +26,7 @@ const C = {
   minGap: 1000, // écart minimum entre deux phrases, sauf urgence
   urgent: 1.5, // priorité à partir de laquelle on parle tout de suite
   ttl: 4000, // une phrase en attente plus de 4 s est jetée
+  streetTextTtl: 6000, // un panneau ou nom de lieu vérifié laisse aussi le temps de démarrer la voix
   staleDiff: 0.5, // description de scène : si l'image a changé à plus de 50 % avant de parler, on jette
   repeatWindow: 30000,
   repeatWindowMonde: 60000, // dans la rue, on repasse souvent devant la même enseigne
@@ -672,7 +673,7 @@ export default function Murmure() {
     const sid = session.current;
     const gone = () => sid !== session.current || phaseRef.current === "arret";
     const md = modeRef.current;
-    const deadline = t0 + C.ttl * (md === "monde" ? 1 : 2);
+    const deadline = t0 + (md === "monde" ? C.streetTextTtl : C.ttl * 2);
     const recent = recentTexts();
     const big = captureJpeg(video, 768, 0.8);
     const small = md === "monde" ? big : captureJpeg(video, 768, 0.72);
@@ -1105,7 +1106,8 @@ export default function Murmure() {
     const p = pending.current;
     if (!p || flushing.current !== null || phaseRef.current !== "narration") return;
     const sid = session.current;
-    const expiresAt = p.triggeredAt + C.ttl * (p.mode === "monde" || p.nature === "action" || p.nature === "scene" ? 1 : 2);
+    const streetText = p.mode === "monde" && (p.nature === "panneau" || p.nature === "enseigne_ou_lieu");
+    const expiresAt = p.triggeredAt + (streetText ? C.streetTextTtl : C.ttl * (p.mode === "monde" || p.nature === "action" || p.nature === "scene" ? 1 : 2));
     const now = Date.now();
     if (now >= expiresAt) {
       pending.current = null;
@@ -1114,12 +1116,20 @@ export default function Murmure() {
     }
     const sp = speaker.current;
     if (sp.busy) {
+      // Dans la rue, une détection suivante ne coupe ni le chargement ni la phrase courte en cours.
+      // Elle reste en réserve et sera dite à son tour si elle est encore fraîche.
+      if (p.mode === "monde") return;
       const nowSpeaking = speakingNature.current;
       const fresherAction = p.nature === "action" && (nowSpeaking === "action" || nowSpeaking === "scene") && p.triggeredAt > speakingT0.current;
       if ((nowSpeaking === "scene" && p.nature !== "scene") || fresherAction) {
         sp.cut();
         log("info", fresherAction ? "Action précédente coupée pour la plus récente." : "Description coupée pour une info plus importante.");
       } else return;
+    }
+    if (p.mode === "monde" && spoken.current.some(s => now - s.t < C.repeatWindowMonde && overlap(p.text, s.text) >= C.repeatOverlap)) {
+      pending.current = null;
+      log("tu", `Déjà dit : « ${p.text} »`, p.detail);
+      return;
     }
     const minGap = p.mode === "monde" ? 0 : C.minGap;
     if (p.priority < C.urgent && now - lastSpeechEnd.current < minGap) return;
@@ -1141,7 +1151,7 @@ export default function Murmure() {
     speakingT0.current = p.triggeredAt;
     try {
       const preparedId = await Promise.race([p.voiceId, new Promise<null>((r) => setTimeout(() => r(null), 300))]);
-      if (!alive() || Date.now() >= expiresAt || p.triggeredAt < newestQueued.current) return;
+      if (!alive() || Date.now() >= expiresAt || (p.mode !== "monde" && p.triggeredAt < newestQueued.current)) return;
       const playback = sp.sayStream(p.text, () => {
         if (!alive()) return;
         const sec = (Date.now() - p.triggeredAt) / 1000;
