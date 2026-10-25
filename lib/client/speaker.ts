@@ -23,11 +23,14 @@ export class Speaker {
   busy = false;
   code = "";
   language: Language = "fr";
+  /** Le serveur local peut préparer une voix ; Vercel utilise directement le flux. */
+  preparationEnabled = false;
   /** Trace des événements audio, envoyée au Mac en mode réglage. */
   trace: (event: string, detail?: string) => void = () => {};
 
   /** À appeler dans le geste de l'utilisateur : obligatoire sur iPhone. */
   async unlock(): Promise<AudioCheck> {
+    this.streamFailures = 0;
     const nav = navigator as AudioSessionNavigator;
     try {
       if (nav.audioSession) nav.audioSession.type = "playback";
@@ -51,21 +54,68 @@ export class Speaker {
     }
   }
 
-  stop() {
+  private operation: AbortController | null = null;
+  private preparations = new Set<AbortController>();
+
+  private resetAudio() {
+    if (this.audio) {
+      this.audio.onplaying = null;
+      this.audio.onended = null;
+      this.audio.onerror = null;
+      this.audio.pause();
+      this.audio.removeAttribute("src");
+      this.audio.load(); // annule aussi un flux qui attend encore ses premiers octets
+    }
+    if (this.url) URL.revokeObjectURL(this.url);
+    this.url = null;
+  }
+
+  private interrupt() {
     this.epoch += 1;
-    try {
-      this.audio?.pause();
-    } catch {}
+    this.operation?.abort();
+    this.operation = null;
+    this.resetAudio();
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
     this.busy = false;
   }
 
-  /** Demande la voix d'une phrase. On peut l'appeler en avance, pendant la vérification. */
-  async fetchVoice(text: string): Promise<Blob> {
+  stop() {
+    this.interrupt();
+    for (const ctrl of this.preparations) ctrl.abort();
+    this.preparations.clear();
+  }
+
+  private begin() {
+    this.interrupt();
+    const ctrl = new AbortController();
+    this.operation = ctrl;
+    this.busy = true;
+    return { ctrl, epoch: this.epoch };
+  }
+
+  /** Même échéance pour le téléchargement, le flux et la voix de secours. */
+  private beforeDeadline<T>(work: Promise<T>, ctrl: AbortController, deadline: number): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const cancel = () => { cleanup(); reject(ctrl.signal.reason); };
+      const timer = setTimeout(() => ctrl.abort(new Error("voix trop lente à démarrer")), Math.max(0, deadline - Date.now()));
+      const cleanup = () => { clearTimeout(timer); ctrl.signal.removeEventListener("abort", cancel); };
+      ctrl.signal.addEventListener("abort", cancel, { once: true });
+      if (ctrl.signal.aborted) cancel();
+      work.then((value) => {
+        cleanup();
+        if (ctrl.signal.aborted) reject(ctrl.signal.reason);
+        else if (Date.now() >= deadline) reject(new Error("voix trop lente à démarrer"));
+        else resolve(value);
+      }, (e) => { cleanup(); reject(e); });
+    });
+  }
+
+  async fetchVoice(text: string, signal?: AbortSignal): Promise<Blob> {
     const res = await fetch("/api/speak", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-murmure-code": this.code },
       body: JSON.stringify({ texte: text, language: this.language }),
+      signal,
     });
     if (res.status !== 200) throw new Error(`voix OpenAI indisponible (${res.status})`);
     const blob = await res.blob();
@@ -73,140 +123,156 @@ export class Speaker {
     return blob;
   }
 
-  /** Dit une phrase avec la voix OpenAI, déjà préparée ou non. Secours : voix du téléphone. */
-  /**
-   * Dit une phrase en flux : l'élément <audio> lit la voix au fur et à mesure qu'OpenAI la produit.
-   * Gagne environ une seconde sur le chemin « fichier entier ». Secours : fichier entier, puis voix du téléphone.
-   */
-  /** Demande au serveur de préparer la voix tout de suite ; rend son identifiant (ou null). */
+  /** La préparation est annulable même si aucune lecture n'a encore commencé. */
   async prepare(text: string): Promise<string | null> {
+    if (!this.preparationEnabled) return null;
+    const ctrl = new AbortController();
+    this.preparations.add(ctrl);
+    const timer = setTimeout(() => ctrl.abort(), 3500);
     try {
       const res = await fetch("/api/speak/prepare", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-murmure-code": this.code },
         body: JSON.stringify({ texte: text, language: this.language }),
+        signal: ctrl.signal,
       });
-      if (!res.ok) return null;
+      if (!res.ok || ctrl.signal.aborted) return null;
       const j = (await res.json()) as { id?: string | null };
-      return j.id ?? null;
+      return ctrl.signal.aborted ? null : j.id ?? null;
     } catch {
       return null;
+    } finally {
+      clearTimeout(timer);
+      this.preparations.delete(ctrl);
     }
   }
 
-  async sayStream(text: string, onStart?: () => void, maxWait = 3500, preparedId?: string | null): Promise<Spoken> {
-    const epoch = this.epoch;
+  private playAudio(src: string, ctrl: AbortController, deadline: number, onStart?: () => void, stream = false): Promise<void> {
     const audio = this.audio;
-    if (!audio || this.streamFailures >= 2) return this.say(text, undefined, onStart);
-    this.busy = true;
+    if (!audio) return Promise.reject(new Error("son non débloqué"));
+    if (ctrl.signal.aborted) return Promise.reject(ctrl.signal.reason);
+    return new Promise((resolve, reject) => {
+      let started = false;
+      let settled = false;
+      const cleanup = () => {
+        clearTimeout(guard);
+        clearTimeout(end);
+        ctrl.signal.removeEventListener("abort", cancel);
+        if (audio.onplaying === playing) audio.onplaying = null;
+        if (audio.onended === ended) audio.onended = null;
+        if (audio.onerror === failed) audio.onerror = null;
+      };
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error) {
+          if (this.operation === ctrl) this.resetAudio();
+          reject(error);
+        } else resolve();
+      };
+      const cancel = () => finish(ctrl.signal.reason);
+      const guard = setTimeout(() => ctrl.abort(new Error("voix trop lente à démarrer")), Math.max(0, deadline - Date.now()));
+      const end = setTimeout(() => finish(new Error("lecture audio trop longue")), 20000);
+      const playing = () => {
+        if (started || settled) return;
+        if (ctrl.signal.aborted || Date.now() >= deadline) {
+          finish(ctrl.signal.reason ?? new Error("voix trop lente à démarrer"));
+          return;
+        }
+        started = true;
+        clearTimeout(guard);
+        onStart?.();
+      };
+      const ended = () => {
+        if (settled || ctrl.signal.aborted) return;
+        if (!started) return finish(new Error("lecture audio sans son"));
+        this.trace(stream ? "voix jouée (flux)" : "voix jouée", `${Number.isFinite(audio.duration) ? audio.duration.toFixed(1) : "?"} s`);
+        finish();
+      };
+      const failed = () => finish(new Error(`lecture audio impossible, code ${audio.error?.code}`));
+      ctrl.signal.addEventListener("abort", cancel, { once: true });
+      audio.onplaying = playing;
+      audio.onended = ended;
+      audio.onerror = failed;
+      audio.src = src;
+      audio.defaultPlaybackRate = RATE;
+      audio.playbackRate = RATE;
+      audio.play().catch(finish);
+    });
+  }
+
+  async sayStream(text: string, onStart?: () => void, maxWait = 3500, preparedId?: string | null, expiresAt = Infinity): Promise<Spoken> {
+    const op = this.begin();
+    const deadline = Math.min(expiresAt, Date.now() + maxWait);
     try {
-      await new Promise<void>((resolve, reject) => {
-        let started = false;
-        const guard = setTimeout(() => {
-          if (!started) reject(new Error("voix trop lente à démarrer"));
-        }, maxWait);
-        const end = setTimeout(() => resolve(), 20000);
-        audio.onplaying = () => {
-          if (started) return;
-          started = true;
-          clearTimeout(guard);
-          onStart?.();
-        };
-        audio.onended = () => {
-          clearTimeout(guard);
-          clearTimeout(end);
-          this.trace("voix jouée (flux)", `${Number.isFinite(audio.duration) ? audio.duration.toFixed(1) : "?"} s`);
-          resolve();
-        };
-        audio.onerror = () => {
-          clearTimeout(guard);
-          clearTimeout(end);
-          reject(new Error(`flux audio impossible, code ${audio.error?.code}`));
-        };
+      if (Date.now() >= deadline) return { via: "openai", error: "voix trop lente à démarrer" };
+      if (this.audio && this.streamFailures < 2) {
         const id = preparedId ? `&id=${encodeURIComponent(preparedId)}` : "";
-        audio.src = `/api/speak?k=${encodeURIComponent(this.code)}&t=${encodeURIComponent(text)}&language=${this.language}${id}`;
-        audio.defaultPlaybackRate = RATE;
-        audio.playbackRate = RATE;
-        audio.play().catch((e) => {
-          clearTimeout(guard);
-          clearTimeout(end);
-          reject(e);
-        });
-      });
-      this.streamFailures = 0;
-      return { via: "openai" };
+        const src = `/api/speak?k=${encodeURIComponent(this.code)}&t=${encodeURIComponent(text)}&language=${this.language}${id}`;
+        try {
+          await this.playAudio(src, op.ctrl, deadline, onStart, true);
+          this.streamFailures = 0;
+          return { via: "openai" };
+        } catch (e) {
+          if (op.epoch !== this.epoch || op.ctrl.signal.aborted || Date.now() >= deadline) throw e;
+          this.streamFailures += 1;
+          if (this.streamFailures === 2) this.trace("flux abandonné pour la séance", "retour au fichier entier");
+          this.trace("flux en échec, fichier entier", e instanceof Error ? e.message : String(e));
+        }
+      }
+      return await this.sayFile(text, op.ctrl, deadline, onStart);
     } catch (e) {
-      audio.onplaying = null;
-      this.streamFailures += 1;
-      if (this.streamFailures === 2) this.trace("flux abandonné pour la séance", "retour au fichier entier");
-      if (epoch !== this.epoch) return { via: "openai", error: "annulé" };
-      const err = e instanceof Error ? `${e.name} ${e.message}` : String(e);
-      this.trace("flux en échec, fichier entier", err);
-      this.busy = false;
-      if (/trop lente/.test(err)) return { via: "openai", error: err }; // trop tard : on se tait plutôt que parler en retard
-      return this.say(text, undefined, onStart);
+      return { via: "openai", error: op.epoch !== this.epoch ? "annulé" : e instanceof Error ? e.message : String(e) };
     } finally {
-      audio.onplaying = null;
-      if (epoch === this.epoch) this.busy = false;
+      if (op.epoch === this.epoch) {
+        this.operation = null;
+        this.busy = false;
+      }
     }
   }
 
-  /** Coupe la phrase en cours, pour laisser passer une info plus importante. */
+  /** Coupe et libère immédiatement la lecture, sans attendre un événement du navigateur. */
   cut() {
-    this.epoch += 1; // la phrase coupée ne doit pas libérer la voix de la suivante
-    try {
-      this.audio?.pause();
-      this.audio?.dispatchEvent(new Event("ended"));
-    } catch {}
+    this.interrupt();
   }
 
-  async say(text: string, voice?: Promise<Blob>, onStart?: () => void): Promise<Spoken> {
-    const epoch = this.epoch;
-    this.busy = true;
+  async say(text: string, voice?: Promise<Blob>, onStart?: () => void, expiresAt = Date.now() + 3500): Promise<Spoken> {
+    const op = this.begin();
     try {
-      const blob = await (voice ?? this.fetchVoice(text));
-      if (epoch !== this.epoch) return { via: "openai", error: "annulé par l'arrêt" };
-      if (!this.audio) throw new Error("son non débloqué");
-      if (this.url) URL.revokeObjectURL(this.url);
-      this.url = URL.createObjectURL(blob);
-      const audio = this.audio;
-      await new Promise<void>((resolve, reject) => {
-        const guard = setTimeout(() => resolve(), 15000);
-        audio.onended = () => {
-          clearTimeout(guard);
-          this.trace("voix jouée", `${audio.duration.toFixed(1)} s`);
-          resolve();
-        };
-        audio.onerror = () => {
-          clearTimeout(guard);
-          reject(new Error(`lecture audio impossible, code ${audio.error?.code}`));
-        };
-        audio.src = this.url!;
-        audio.defaultPlaybackRate = RATE;
-        audio.playbackRate = RATE;
-        audio
-          .play()
-          .then(() => onStart?.())
-          .catch((e) => {
-            clearTimeout(guard);
-            reject(e);
-          });
-      });
-      return { via: "openai" };
+      if (Date.now() >= expiresAt) return { via: "openai", error: "voix trop lente à démarrer" };
+      return await this.sayFile(text, op.ctrl, expiresAt, onStart, voice);
     } catch (e) {
-      const err = e instanceof Error ? `${e.name} ${e.message}` : String(e);
-      if (epoch !== this.epoch) return { via: "openai", error: "annulé par l'arrêt" };
-      this.trace("voix OpenAI en échec", err);
-      await this.fallback(text);
-      return { via: "telephone", error: err };
+      return { via: "openai", error: op.epoch !== this.epoch ? "annulé" : e instanceof Error ? e.message : String(e) };
     } finally {
-      if (epoch === this.epoch) this.busy = false;
+      if (op.epoch === this.epoch) {
+        this.operation = null;
+        this.busy = false;
+      }
     }
   }
 
-  /** Voix du téléphone, seulement en secours. */
-  private fallback(text: string): Promise<void> {
-    return new Promise((resolve) => {
+  private async sayFile(text: string, ctrl: AbortController, deadline: number, onStart?: () => void, voice?: Promise<Blob>): Promise<Spoken> {
+    try {
+      const blob = await this.beforeDeadline(voice ?? this.fetchVoice(text, ctrl.signal), ctrl, deadline);
+      if (ctrl.signal.aborted) throw ctrl.signal.reason;
+      this.url = URL.createObjectURL(blob);
+      await this.playAudio(this.url, ctrl, deadline, onStart);
+      return { via: "openai" };
+    } catch (e) {
+      if (ctrl.signal.aborted || Date.now() >= deadline) throw e;
+      const err = e instanceof Error ? e.message : String(e);
+      this.trace("voix OpenAI en échec", err);
+      await this.fallback(text, ctrl, deadline, onStart);
+      return { via: "telephone", error: err };
+    }
+  }
+
+  /** Le secours respecte lui aussi l'arrêt et l'échéance du premier son. */
+  private fallback(text: string, ctrl: AbortController, deadline: number, onStart?: () => void): Promise<void> {
+    if (ctrl.signal.aborted) return Promise.reject(ctrl.signal.reason);
+    if (Date.now() >= deadline) return Promise.reject(new Error("voix trop lente à démarrer"));
+    return new Promise((resolve, reject) => {
       if (!("speechSynthesis" in window)) return resolve();
       const u = new SpeechSynthesisUtterance(text);
       u.lang = this.language === "en" ? "en-US" : "fr-FR";
@@ -214,13 +280,33 @@ export class Speaker {
       const preferred = this.language === "en" ? ["en-US", "en"] : ["fr-FR", "fr"];
       const voice = window.speechSynthesis.getVoices().find((v) => preferred.some((lang) => v.lang.toLowerCase().startsWith(lang.toLowerCase())));
       if (voice) u.voice = voice;
-      const done = () => {
+      let started = false;
+      let settled = false;
+      const done = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(guard);
-        resolve();
+        clearTimeout(end);
+        ctrl.signal.removeEventListener("abort", cancel);
+        u.onstart = u.onend = u.onerror = null;
+        if (error) {
+          window.speechSynthesis.cancel();
+          reject(error);
+        } else resolve();
       };
-      const guard = setTimeout(done, 4000);
-      u.onend = done;
-      u.onerror = done;
+      const cancel = () => done(ctrl.signal.reason);
+      const guard = setTimeout(() => done(new Error("voix trop lente à démarrer")), Math.max(0, deadline - Date.now()));
+      const end = setTimeout(() => done(new Error("lecture audio trop longue")), 20000);
+      ctrl.signal.addEventListener("abort", cancel, { once: true });
+      u.onstart = () => {
+        if (started || settled) return;
+        if (ctrl.signal.aborted || Date.now() >= deadline) return done(ctrl.signal.reason ?? new Error("voix trop lente à démarrer"));
+        started = true;
+        clearTimeout(guard);
+        onStart?.();
+      };
+      u.onend = () => done();
+      u.onerror = () => done(new Error("voix du téléphone indisponible"));
       window.speechSynthesis.speak(u);
     });
   }

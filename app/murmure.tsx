@@ -11,7 +11,7 @@ type Kind = "dit" | "tu" | "cadrage" | "info" | "erreur";
 type Entry = { id: number; t: number; kind: Kind; text: string; detail?: string };
 type Phase = "arret" | "cadrage" | "narration" | "pause";
 type Mode = "ecran" | "monde"; // devant un écran, ou dans la rue
-type Pending = { text: string; priority: number; grid: Grid; triggeredAt: number; queuedAt: number; detail: string; nature: string; voiceId: Promise<string | null> };
+type Pending = { text: string; priority: number; grid: Grid; triggeredAt: number; queuedAt: number; detail: string; nature: string; mode: Mode; voiceId: Promise<string | null> };
 
 // Tous les réglages au même endroit, pour les ajuster sur une vraie télé.
 const C = {
@@ -29,9 +29,10 @@ const C = {
   staleDiff: 0.5, // description de scène : si l'image a changé à plus de 50 % avant de parler, on jette
   repeatWindow: 30000,
   repeatWindowMonde: 60000, // dans la rue, on repasse souvent devant la même enseigne
+  rejectedWindowMonde: 3000, // une nouvelle vue plus nette peut faire vérifier de nouveau un premier refus
   mondeEvery: 1000,
   speculative: 0.15, // l'action va vite : le conteur part dès qu'une image change vraiment
-  noScreenSwitch: 5, // 5 analyses d'affilée sans écran : passage automatique au mode rue // dans la rue tout bouge : au plus une analyse par seconde
+  noScreenSwitch: 5, // pendant le cadrage, 5 analyses sans écran : passage automatique au mode rue
   repeatOverlap: 0.6,
   certMin: 0.4,
   verifyMin: 0.7, // en dessous, la phrase n'est pas dite
@@ -48,8 +49,12 @@ const C = {
   commentaryStagger: 1000, // une nouvelle rédaction au plus toutes les secondes (coût)
   commentaryMaxBackoff: 4000, // attente maximale entre deux rédactions quand rien ne change
   commentaryStill: 0.08, // en dessous de 8 % de l'image changée, on considère l'image immobile
+  commentaryTextChange: 4 / (64 * 36), // quatre petites cases suffisent pour revérifier un texte
+  commentaryTextEvery: 2000,
   commentaryFresh: 2500, // une phrase en réserve de moins de 2,5 s suffit : inutile d'en rédiger d'autres
-  verifyMinMonde: 0.5, // dans une fiction, après 25 s de silence, on décrit la scène
+  screenCheckEvery: 4000, // contrôle du cadrage en parallèle du commentaire
+  screenCheckConfirm: 500, // confirmer rapidement un écran perdu avant d'interrompre
+  verifyMinMonde: 0.5, // seuil des descriptions d'alentours dans la rue
 };
 
 const CUES: Record<string, string> = {
@@ -199,6 +204,7 @@ export default function Murmure() {
   const phaseRef = useRef<Phase>("arret");
   const detailRef = useRef(detail);
   const codeRef = useRef("");
+  const remoteEnabled = useRef(false);
   const demoRef = useRef<string | null>(null);
   const urlDemoRef = useRef<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -227,10 +233,16 @@ export default function Murmure() {
   // Numéro de séance : à l'arrêt il change, et tout ce qui était en route pour l'ancienne séance est jeté.
   const session = useRef(0);
   const restarting = useRef(false);
-  const flushing = useRef(false);
+  const flushing = useRef<number | null>(null);
+  const speechId = useRef(0);
   const speakingNature = useRef("");
   const speakingT0 = useRef(0);
-  const commentaryOn = useRef(false); // la boucle de commentaire continu tourne
+  const commentaryOn = useRef<number | null>(null); // séance propriétaire de la boucle
+  const requests = useRef(new Set<AbortController>());
+  const cameraEpoch = useRef(0);
+  const resumePhase = useRef<"cadrage" | "narration">("narration");
+  const hiddenResume = useRef<"cadrage" | "narration" | null>(null);
+  const screenCheck = useRef<{ sid: number | null; next: number; misses: number }>({ sid: null, next: 0, misses: 0 });
   const frozen = useRef(0);
   const prevGrid = useRef<Grid | null>(null);
   const camIdRef = useRef("");
@@ -243,7 +255,7 @@ export default function Murmure() {
 
   // Mode réglage : chaque événement part aussi vers le Mac, pour comprendre un essai à distance.
   const remote = useCallback((event: string, detail?: string) => {
-    if (!codeRef.current) return;
+    if (!remoteEnabled.current || !codeRef.current) return;
     void fetch("/api/log", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-murmure-code": codeRef.current },
@@ -262,6 +274,40 @@ export default function Murmure() {
     phaseRef.current = p;
     setPhase(p);
   }, []);
+
+  function invalidateWork() {
+    session.current += 1;
+    speechId.current += 1;
+    for (const ctrl of requests.current) ctrl.abort();
+    requests.current.clear();
+    speaker.current.stop();
+    pending.current = null;
+    inFlight.current = 0;
+    flushing.current = null;
+    newestQueued.current = 0;
+    screenCheck.current = { sid: null, next: Date.now() + C.screenCheckEvery, misses: 0 };
+    setSpeaking(false);
+    return session.current;
+  }
+
+  async function request<T>(url: string, body: unknown, deadline: number, signal?: AbortSignal): Promise<T> {
+    const ctrl = new AbortController();
+    const abort = () => ctrl.abort(signal?.reason);
+    const timer = window.setTimeout(() => ctrl.abort(new DOMException("Analyse trop lente", "TimeoutError")), Math.max(0, deadline - Date.now()));
+    requests.current.add(ctrl);
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    try {
+      if (Date.now() >= deadline) throw new DOMException("Analyse trop lente", "TimeoutError");
+      return await post<T>(url, body, codeRef.current, ctrl.signal);
+    } catch (e) {
+      throw ctrl.signal.aborted ? ctrl.signal.reason : e;
+    } finally {
+      window.clearTimeout(timer);
+      requests.current.delete(ctrl);
+      signal?.removeEventListener("abort", abort);
+    }
+  }
 
   // Paramètres d'URL : ?video=/demo.mp4 pour la démo sur ordinateur, ?code=... pour l'accès.
   useEffect(() => {
@@ -296,8 +342,12 @@ export default function Murmure() {
     urlDemoRef.current = v;
     setDemoVideo(v);
     void fetch("/api/access", { method: "POST", headers: { "x-murmure-code": code } })
-      .then((r) => r.json() as Promise<{ code: "ok" | "missing" | "wrong"; openai: boolean }>)
-      .then((a) => setAccess(a.code !== "ok" ? a.code : a.openai ? "ok" : "nokey"))
+      .then((r) => r.json() as Promise<{ code: "ok" | "missing" | "wrong"; openai: boolean; debug?: boolean; voicePreparation?: boolean }>)
+      .then((a) => {
+        remoteEnabled.current = a.code === "ok" && a.debug === true;
+        speaker.current.preparationEnabled = a.code === "ok" && a.voicePreparation === true;
+        setAccess(a.code !== "ok" ? a.code : a.openai ? "ok" : "nokey");
+      })
       .catch(() => setAccess("down"));
   }, [remote]);
 
@@ -326,6 +376,7 @@ export default function Murmure() {
   }
 
   async function startCamera(wanted?: string) {
+    const cameraId = ++cameraEpoch.current;
     const video = videoRef.current;
     if (!video) throw new Error("vidéo absente");
     releaseCamera();
@@ -340,6 +391,7 @@ export default function Murmure() {
     let stream: MediaStream;
     // Sur iPhone, la caméra met parfois quelques secondes à se libérer : on réessaie jusqu'à 4 fois.
     for (let attempt = 1; ; attempt++) {
+      if (cameraId !== cameraEpoch.current) throw new DOMException("Caméra annulée", "AbortError");
       try {
         stream = await navigator.mediaDevices.getUserMedia(attempt <= 2 ? constraints : { video: true, audio: false });
         break;
@@ -350,16 +402,24 @@ export default function Murmure() {
         await new Promise((r) => setTimeout(r, 1000));
       }
     }
+    if (cameraId !== cameraEpoch.current) {
+      stream.getTracks().forEach((t) => t.stop());
+      throw new DOMException("Caméra annulée", "AbortError");
+    }
     // Si iOS coupe la caméra en cours de route, on la relance.
     stream.getVideoTracks().forEach((t) => {
       t.onended = () => {
-        if (phaseRef.current !== "arret" && streamRef.current === stream) void restartCamera("caméra coupée");
+        if (phaseRef.current !== "arret" && document.visibilityState === "visible" && streamRef.current === stream) void restartCamera("caméra coupée");
       };
     });
     streamRef.current = stream;
     video.srcObject = stream;
     video.muted = true;
     await video.play();
+    if (cameraId !== cameraEpoch.current) {
+      stream.getTracks().forEach((t) => t.stop());
+      throw new DOMException("Caméra annulée", "AbortError");
+    }
     void refreshCams(); // les noms des caméras ne sont lisibles qu'après l'autorisation
   }
 
@@ -405,13 +465,16 @@ export default function Murmure() {
     if (cams.length < 2) return;
     const i = cams.findIndex((c) => c.id === camIdRef.current);
     const next = cams[(i + 1) % cams.length];
+    const sid = invalidateWork();
     chooseCam(next.id);
     try {
       await startCamera(next.id);
+      if (sid !== session.current) return;
       lastJudgedGrid.current = null;
       frozen.current = 0;
       log("info", `Caméra : ${next.label}`);
     } catch (e) {
+      if (sid !== session.current || (e instanceof DOMException && e.name === "AbortError")) return;
       log("erreur", "Impossible de changer de caméra.", e instanceof Error ? e.message : String(e));
     }
   }
@@ -419,11 +482,14 @@ export default function Murmure() {
   async function restartCamera(reason: string) {
     if (restarting.current || demoRef.current) return;
     restarting.current = true;
+    const sid = invalidateWork();
     log("erreur", "La caméra s'est arrêtée, je la relance.", reason);
     try {
       await startCamera();
+      if (sid !== session.current) return;
       frozen.current = 0;
     } catch (e) {
+      if (sid !== session.current || (e instanceof DOMException && e.name === "AbortError")) return;
       log("erreur", "Impossible de relancer la caméra.", e instanceof Error ? e.message : String(e));
     } finally {
       restarting.current = false;
@@ -453,11 +519,11 @@ export default function Murmure() {
   async function start(m: Mode = "ecran") {
     if (starting.current || phaseRef.current !== "arret") return; // un double appui ouvrirait deux caméras
     starting.current = true;
+    const startSession = invalidateWork();
     const unlocking = speaker.current.unlock(); // doit partir dans le geste de l'utilisateur, avant tout await
     modeRef.current = m;
     setMode(m);
     setProblem(null);
-    session.current += 1;
     setEntries([]);
     setReaction(null);
     setVoiceNote("");
@@ -466,6 +532,7 @@ export default function Murmure() {
       await startSource();
     } catch (e) {
       starting.current = false;
+      if (startSession !== session.current) return;
       releaseCamera();
       const p = demoRef.current
         ? {
@@ -479,9 +546,11 @@ export default function Murmure() {
     }
     starting.current = false;
     const sound = await unlocking;
+    if (startSession !== session.current) return;
     setupMediaSession(m);
     log(sound.ok ? "info" : "erreur", sound.ok ? "Son débloqué." : "Son bloqué par le navigateur.", sound.detail);
     await requestWakeLock();
+    if (startSession !== session.current) return;
     setCue("");
     lastJudgedGrid.current = null;
     lastJudgeAt.current = 0;
@@ -560,10 +629,11 @@ export default function Murmure() {
   }
 
   function stop() {
-    session.current += 1;
+    invalidateWork();
+    cameraEpoch.current += 1;
+    hiddenResume.current = null;
     clearMediaSession();
     clearTimers();
-    speaker.current.stop();
     videoRef.current?.pause();
     releaseCamera();
     void wakeRef.current?.release().catch(() => {});
@@ -577,13 +647,15 @@ export default function Murmure() {
 
   function togglePause() {
     if (phaseRef.current === "pause") {
-      setPhaseBoth("narration");
+      invalidateWork();
+      hiddenResume.current = null;
+      setPhaseBoth(resumePhase.current);
       lastJudgedGrid.current = null;
       if (navigator.mediaSession) navigator.mediaSession.playbackState = "playing";
       void speaker.current.say(localizedSpeech(languageRef.current, "resume"));
     } else if (phaseRef.current === "narration" || phaseRef.current === "cadrage") {
-      speaker.current.stop();
-      pending.current = null;
+      resumePhase.current = phaseRef.current;
+      invalidateWork();
       setPhaseBoth("pause");
       if (navigator.mediaSession) navigator.mediaSession.playbackState = "paused";
       void speaker.current.say(localizedSpeech(languageRef.current, "pause"));
@@ -598,7 +670,7 @@ export default function Murmure() {
   async function analyse(video: HTMLVideoElement, grid: Grid, ch: number, t0: number) {
     const sid = session.current;
     const gone = () => sid !== session.current || phaseRef.current === "arret";
-    const code = codeRef.current;
+    const deadline = t0 + C.ttl * 2; // les textes restent utiles plus longtemps qu'une action
     const recent = recentTexts();
     const small = captureJpeg(video, 768, 0.72);
     const big = captureJpeg(video, 768, 0.8);
@@ -607,21 +679,22 @@ export default function Murmure() {
     const sp = speaker.current;
     // Seulement utile à la simulation sans clé, pour suivre le script de la vidéo de test.
     const demoTime = demoRef.current ? video.currentTime : undefined;
-    const refused = rejected.current.filter((r) => t0 - r.t < C.repeatWindow).map((r) => r.text);
     const md = modeRef.current;
+    const rejectedSpan = md === "monde" ? C.rejectedWindowMonde : C.repeatWindow;
+    const refused = rejected.current.filter((r) => t0 - r.t < rejectedSpan).map((r) => r.text);
     const describeBody = { image: big, recent: [...recent, ...refused], detail: detailRef.current, demoTime, mode: md, vitesse: vitesseRef.current, language: languageRef.current };
 
     let spec: { ctrl: AbortController; p: Promise<Description> } | null = null;
     // Le conteur part à l'avance seulement sur un vrai changement d'image ; sinon il attend l'avis du juge (0,3 s).
     if (ph === "narration" && (ch >= C.speculative || md === "monde")) {
       const ctrl = new AbortController();
-      const p = post<Description>("/api/describe", describeBody, code, ctrl.signal);
+      const p = request<Description>("/api/describe", describeBody, deadline, ctrl.signal);
       p.catch(() => {});
       spec = { ctrl, p };
     }
     const abortSpec = () => spec?.ctrl.abort();
 
-    const v = await post<Verdict>("/api/judge", { image: small, recent, mode: md, language: languageRef.current }, code);
+    const v = await request<Verdict>("/api/judge", { image: small, recent, mode: md, language: languageRef.current }, deadline);
     if (gone()) return abortSpec();
     setJudgeSource(sourceLabel(v.source, languageRef.current));
     if (v.source === "simulation") setSimulation(true);
@@ -634,6 +707,7 @@ export default function Murmure() {
         // Aucun écran du tout pendant ~2 s : la personne est sans doute dehors. On passe seul en mode « Autour de moi ».
         noScreen.current = v.teleVisible < 0.3 ? noScreen.current + 1 : 0;
         if (noScreen.current >= C.noScreenSwitch && !sp.busy) {
+          invalidateWork();
           noScreen.current = 0;
           modeRef.current = "monde";
           setMode("monde");
@@ -698,14 +772,15 @@ export default function Murmure() {
       return;
     }
 
-    const d = spec ? await spec.p : await post<Description>("/api/describe", describeBody, code);
+    const d = spec ? await spec.p : await request<Description>("/api/describe", describeBody, deadline);
     if (gone()) return;
     if (!d.texte || d.certitude < C.certMin) {
       log("tu", `Description incertaine : « ${d.texte} »`, `${scores}, certitude ${pct(d.certitude)}`);
       return;
     }
     const repeatSpan = md === "monde" ? C.repeatWindowMonde : C.repeatWindow;
-    const dup = [...spoken.current, ...rejected.current].find((s) => t0 - s.t < repeatSpan && overlap(d.texte, s.text) >= C.repeatOverlap);
+    const dup = spoken.current.some((s) => t0 - s.t < repeatSpan && overlap(d.texte, s.text) >= C.repeatOverlap) ||
+      rejected.current.some((s) => t0 - s.t < rejectedSpan && overlap(d.texte, s.text) >= C.repeatOverlap);
     if (dup) {
       log("tu", `Déjà dit : « ${d.texte} »`, scores);
       return;
@@ -716,7 +791,7 @@ export default function Murmure() {
     const ver: Verification =
       md === "ecran" && v.nature === "action"
         ? { conforme: 1, source: v.source, ms: 0 }
-        : await post<Verification>("/api/verify", { image: big, texte: d.texte, mode: md, language: languageRef.current }, code);
+        : await request<Verification>("/api/verify", { image: big, texte: d.texte, mode: md, language: languageRef.current }, deadline);
     if (gone()) return;
     // Dans la rue, une description d'alentours (« un tram à droite ») est moins certaine qu'un texte lu :
     // seuil plus bas, mais les fausses affirmations restent bien en dessous (mesuré : 0,0 à 0,15).
@@ -735,6 +810,7 @@ export default function Murmure() {
     pending.current = {
       text: d.texte,
       nature: v.nature,
+      mode: md,
       voiceId,
       priority: v.priorite,
       grid,
@@ -744,42 +820,50 @@ export default function Murmure() {
     };
   }
 
-  // Commentaire continu, comme à la radio. Deux rédactions tournent en parallèle, décalées de 0,7 s :
+  // Commentaire continu, comme à la radio. Deux rédactions tournent en parallèle, décalées d'au moins 1 s :
   // quand l'une retombe sur une phrase déjà dite, l'autre a souvent du neuf. Seule la plus récente est dite,
   // et rien de plus vieux que 4 s. Pas de juge ni de vérificateur ici : ils ajoutaient de l'attente.
   async function commentaryLoop(sid: number) {
-    commentaryOn.current = true;
+    commentaryOn.current = sid;
     const sp = speaker.current;
     const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    const alive = () => sid === session.current && (phaseRef.current === "narration" || phaseRef.current === "pause");
+    const alive = () => sid === session.current && phaseRef.current === "narration";
     type Ready = { text: string; t0: number; ms: number; voiceId: Promise<string | null> };
     const box: { ready: Ready | null } = { ready: null }; // phrase en réserve, remplie par les rédactions
     let inflight = 0;
     let lastLaunch = 0;
+    let lastAnalysisAt = 0;
+    let lastVisualAt = 0;
+    let visualGrid: Grid | null = null;
+    let newestRetained = 0; // reste valable même quand la phrase en réserve a déjà été dite
+    let reservedText = ""; // évite un doublon pendant que le premier son se prépare
     // Économie : quand le conteur n'a rien de neuf, on attend de plus en plus avant de relancer (1, 2, puis 4 s),
     // et on ne relance pas si l'image n'a presque pas bougé depuis la dernière rédaction.
     let backoff = C.commentaryStagger;
     let lastGrid: Grid | null = null;
     const isDup = (t: string, now: number) =>
       spoken.current.some((x) => now - x.t < C.repeatWindow && overlap(t, x.text) >= C.repeatOverlap) ||
+      (reservedText !== "" && overlap(t, reservedText) >= C.repeatOverlap) ||
       (box.ready !== null && overlap(t, box.ready.text) >= C.repeatOverlap);
 
     const launch = async () => {
       const video = videoRef.current;
-      const img = video ? captureJpeg(video, 768, 0.8) : null;
-      if (!img || !video) return;
-      const g = captureGrid(video);
-      if (g && lastGrid && backoff > C.commentaryStagger && gridDiff(lastGrid, g) < C.commentaryStill) {
-        lastLaunch = Date.now(); // image quasi immobile après une répétition : on n'appelle pas le conteur
+      if (!video) return;
+      const g = captureGrid(video, 64, 36);
+      if (g && lastGrid && backoff > C.commentaryStagger && Date.now() - lastAnalysisAt < C.forceNarration && gridDiff(lastGrid, g) < C.commentaryTextChange) {
+        lastLaunch = Date.now(); // image immobile ; un contrôle forcé reste prévu au plus tard après 8 s
         return;
       }
+      const img = captureJpeg(video, 768, 0.8);
+      if (!img) return;
       if (g) lastGrid = g;
       inflight += 1;
       lastLaunch = Date.now();
       const t0 = Date.now();
-      const recent = [...recentTexts(), ...(box.ready ? [box.ready.text] : [])];
+      lastAnalysisAt = t0;
+      const recent = [...recentTexts(), ...(reservedText ? [reservedText] : []), ...(box.ready ? [box.ready.text] : [])];
       try {
-        const d = await post<Description>(
+        const d = await request<Description>(
           "/api/describe",
           {
             image: img,
@@ -790,9 +874,10 @@ export default function Murmure() {
             language: languageRef.current,
             demoTime: demoRef.current ? video?.currentTime : undefined,
           },
-          codeRef.current,
+          t0 + C.ttl,
         );
         if (!alive()) return;
+        if (t0 <= newestRetained || Date.now() >= t0 + C.ttl) return;
         if (!d.texte || d.certitude < C.commentaryCertMin || isDup(d.texte, t0)) {
           backoff = Math.min(backoff * 2, C.commentaryMaxBackoff);
           log("tu", d.texte ? `Déjà dit : « ${d.texte} »` : "Rien de nouveau à dire", `conteur ${d.ms} ms, certitude ${pct(d.certitude)}`);
@@ -800,9 +885,14 @@ export default function Murmure() {
         }
         backoff = C.commentaryStagger;
         // La plus récente l'emporte : une image plus neuve remplace une phrase pas encore dite.
-        if (!box.ready || t0 > box.ready.t0) box.ready = { text: d.texte, t0, ms: d.ms, voiceId: sp.prepare(d.texte) };
+        newestRetained = t0;
+        box.ready = { text: d.texte, t0, ms: d.ms, voiceId: sp.prepare(d.texte) };
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
+        if (e instanceof DOMException && e.name === "TimeoutError") {
+          if (alive()) log("tu", "Analyse trop lente, image abandonnée.");
+          return;
+        }
         if (alive() && (message === "Code d'accès requis" || message === "Access code required")) {
           stop();
           const problem = accessProblem(languageRef.current);
@@ -818,15 +908,21 @@ export default function Murmure() {
 
     try {
       while (alive()) {
-        if (phaseRef.current === "pause") {
-          box.ready = null; // rien de vieux à la reprise
-          await wait(200);
-          continue;
-        }
         const now = Date.now();
-        // Rédaction : jusqu'à deux en parallèle, une nouvelle toutes les 0,7 s, tant qu'on n'a pas une phrase fraîche en réserve.
+        if (now - lastVisualAt >= C.tick) {
+          lastVisualAt = now;
+          const video = videoRef.current;
+          visualGrid = video ? captureGrid(video, 64, 36) : null;
+          if (visualGrid && lastGrid) {
+            const change = gridDiff(lastGrid, visualGrid);
+            if (change >= C.commentaryStill) backoff = C.commentaryStagger;
+            else if (change >= C.commentaryTextChange) backoff = Math.min(backoff, C.commentaryTextEvery);
+          }
+        }
+        // Le mouvement reprend sans attendre la fin du ralentissement ; un petit texte reste surveillé.
         const needMore = !box.ready || now - box.ready.t0 > C.commentaryFresh;
-        if (needMore && inflight < 2 && now - lastLaunch >= backoff) void launch();
+        const force = now - lastAnalysisAt >= C.forceNarration;
+        if (needMore && inflight < 2 && (force || now - lastLaunch >= backoff)) void launch();
         // Parole : dès que la voix est libre, la phrase en réserve part.
         if (!sp.busy && box.ready) {
           const r: Ready = box.ready;
@@ -835,25 +931,39 @@ export default function Murmure() {
             log("tu", `Périmé : « ${r.text} »`, `${((now - r.t0) / 1000).toFixed(1)} s`);
             continue;
           }
-          spoken.current = [...spoken.current, { text: r.text, t: now }].slice(-10);
-          log("dit", r.text, `commentaire, conteur ${r.ms} ms, délai total ${((now - r.t0) / 1000).toFixed(1)} s`);
+          const turn = ++speechId.current;
+          const voiceAlive = () => alive() && turn === speechId.current;
+          reservedText = r.text;
           speakingNature.current = "action";
           speakingT0.current = r.t0;
           setSpeaking(true);
           const id = await Promise.race([r.voiceId, wait(250).then(() => null)]);
+          if (!voiceAlive()) return;
+          if (Date.now() >= r.t0 + C.ttl) {
+            reservedText = "";
+            setSpeaking(false);
+            continue;
+          }
           void sp
             .sayStream(
               r.text,
               () => {
+                if (!voiceAlive()) return;
                 const sec = (Date.now() - r.t0) / 1000;
+                spoken.current = [...spoken.current, { text: r.text, t: Date.now() }].slice(-10);
+                log("dit", r.text, `commentaire, conteur ${r.ms} ms, délai total ${sec.toFixed(1)} s`);
                 setReaction(sec);
                 remote("premier son", `${sec.toFixed(2)} s après l'image : ${r.text}`);
               },
               C.voiceWait,
               id,
+              r.t0 + C.ttl,
             )
             .then((res) => {
+              if (!voiceAlive()) return;
+              reservedText = "";
               setSpeaking(false);
+              if (res.error) log("tu", `Voix abandonnée : « ${r.text} »`, res.error);
               lastSpeechEnd.current = Date.now();
               setVoiceNote(res.via === "openai" ? (languageRef.current === "en" ? "OpenAI voice" : "voix OpenAI") : (languageRef.current === "en" ? "device voice" : "voix du téléphone"));
             });
@@ -862,7 +972,53 @@ export default function Murmure() {
         await wait(100);
       }
     } finally {
-      commentaryOn.current = false;
+      if (commentaryOn.current === sid) commentaryOn.current = null;
+    }
+  }
+
+  // Le cadrage est surveillé sans placer un juge devant chaque phrase du commentaire.
+  async function checkScreen() {
+    const sid = session.current;
+    const state = screenCheck.current;
+    const alive = () => sid === session.current && phaseRef.current === "narration" && modeRef.current === "ecran";
+    if (!alive() || demoRef.current || state.sid !== null || Date.now() < state.next) return;
+    const video = videoRef.current;
+    const image = video ? captureJpeg(video, 768, 0.72) : null;
+    if (!image) return;
+    state.sid = sid;
+    state.next = Date.now() + C.screenCheckEvery;
+    try {
+      const verdict = await request<Verdict>("/api/judge", { image, recent: [], mode: "ecran", language: languageRef.current }, Date.now() + C.voiceWait);
+      if (!alive()) return;
+      const framed = verdict.teleVisible >= 0.5 && verdict.inutilisable < C.unusableMin && (verdict.cadrage === "bon" || verdict.cadrage === "trop_loin");
+      if (framed) { state.misses = 0; return; }
+      state.misses += 1;
+      if (state.misses < 2) {
+        state.next = Date.now() + C.screenCheckConfirm;
+        return;
+      }
+      invalidateWork();
+      framingGood.current = 0;
+      noScreen.current = 0;
+      lastJudgedGrid.current = null;
+      lastJudgeAt.current = 0;
+      setPhaseBoth("cadrage");
+      const key = verdict.teleVisible < 0.5 ? "pas_de_tele" : verdict.cadrage;
+      const cue = verdict.inutilisable >= C.unusableMin ? localizedSpeech(languageRef.current, "blurScreen") : framingCue(languageRef.current, key);
+      lastCueAt.current = Date.now();
+      setCue(cue);
+      log("cadrage", languageRef.current === "en" ? "Screen lost. Finding it again." : "Écran perdu, nouvelle recherche.");
+      void speaker.current.say(cue);
+    } catch (e) {
+      if (!alive()) return;
+      const message = e instanceof Error ? e.message : String(e);
+      if (message === "Code d'accès requis" || message === "Access code required") {
+        stop();
+        setProblem(accessProblem(languageRef.current));
+      }
+      // Une erreur réseau n'est pas une preuve que l'écran a disparu.
+    } finally {
+      if (screenCheck.current === state) state.sid = null;
     }
   }
 
@@ -899,7 +1055,8 @@ export default function Murmure() {
     }
     // Devant un écran, une fois l'écran trouvé : commentaire continu, comme à la radio.
     if (ph === "narration" && modeRef.current === "ecran") {
-      if (!commentaryOn.current) void commentaryLoop(session.current);
+      void checkScreen();
+      if (commentaryOn.current !== session.current) void commentaryLoop(session.current);
       return;
     }
     const ref = lastJudgedGrid.current;
@@ -910,12 +1067,17 @@ export default function Murmure() {
     const force = ph === "cadrage" ? since >= C.forceFraming : since >= C.forceNarration;
     if (ch < C.changeThreshold && !force) return;
     inFlight.current += 1;
+    const sid = session.current;
     lastJudgeAt.current = now;
     lastJudgedGrid.current = grid;
     try {
       await analyse(video, grid, ch, now);
     } catch (e) {
-      if (phaseRef.current === "arret") return;
+      if (sid !== session.current || phaseRef.current === "arret") return;
+      if (e instanceof DOMException && e.name === "TimeoutError") {
+        log("tu", "Analyse trop lente, image abandonnée.");
+        return;
+      }
       const msg = e instanceof Error ? e.message : String(e);
       if (msg === "Code d'accès requis" || msg === "Access code required") {
         // Sans code, rien ne peut marcher : on s'arrête et on explique.
@@ -927,62 +1089,75 @@ export default function Murmure() {
       }
       log("erreur", msg);
     } finally {
-      inFlight.current = Math.max(0, inFlight.current - 1);
+      if (sid === session.current) inFlight.current = Math.max(0, inFlight.current - 1);
     }
   }
 
   // File d'une seule phrase : on parle si c'est encore vrai, et pas trop souvent.
   async function flush() {
     const p = pending.current;
-    if (!p || flushing.current || phaseRef.current !== "narration") return;
-    // Une info écrite (score, alerte, nom) coupe une description de scène en cours : elle est plus utile.
-    if (speaker.current.busy) {
-      // Une info écrite coupe une description de scène ; dans un match, l'action la plus récente coupe la précédente.
-      const nowSpeaking = speakingNature.current;
-      const fresherAction = p.nature === "action" && (nowSpeaking === "action" || nowSpeaking === "scene") && p.triggeredAt > speakingT0.current;
-      if ((nowSpeaking === "scene" && p.nature !== "scene") || fresherAction) {
-        speaker.current.cut();
-        log("info", fresherAction ? "Action précédente coupée pour la plus récente." : "Description coupée pour une info plus importante.");
-      } else return;
-    }
+    if (!p || flushing.current !== null || phaseRef.current !== "narration") return;
+    const sid = session.current;
+    const expiresAt = p.triggeredAt + C.ttl * (p.mode === "monde" || p.nature === "action" || p.nature === "scene" ? 1 : 2);
     const now = Date.now();
-    if (now - p.queuedAt > C.ttl) {
+    if (now >= expiresAt) {
       pending.current = null;
       log("tu", `Périmé : « ${p.text} »`, p.detail);
       return;
     }
-    if (p.priority < C.urgent && now - lastSpeechEnd.current < C.minGap) return;
+    const sp = speaker.current;
+    if (sp.busy) {
+      const nowSpeaking = speakingNature.current;
+      const fresherAction = p.nature === "action" && (nowSpeaking === "action" || nowSpeaking === "scene") && p.triggeredAt > speakingT0.current;
+      if ((nowSpeaking === "scene" && p.nature !== "scene") || fresherAction) {
+        sp.cut();
+        log("info", fresherAction ? "Action précédente coupée pour la plus récente." : "Description coupée pour une info plus importante.");
+      } else return;
+    }
+    const minGap = p.mode === "monde" ? 0 : C.minGap;
+    if (p.priority < C.urgent && now - lastSpeechEnd.current < minGap) return;
     const video = videoRef.current;
     const g = video ? captureGrid(video) : null;
-    // Une info écrite (score, bandeau, nom, carte) reste vraie après un changement de plan : seul le délai compte.
-    // Une description de scène, elle, est fausse dès que la scène a changé.
-    // Une action (tir, but) reste importante quelques secondes après un changement de plan : seule la limite de 4 s compte.
-    const isScene = p.nature === "scene";
-    if (isScene && g && gridDiff(p.grid, g) > C.staleDiff) {
+    // En marchant, un déplacement global de la vue n'invalide pas à lui seul une information vérifiée.
+    // La limite capture → son reste courte, y compris pour les enseignes et transports.
+    if (p.mode !== "monde" && p.nature === "scene" && g && gridDiff(p.grid, g) > C.staleDiff) {
       pending.current = null;
       log("tu", `L'écran a changé avant de parler : « ${p.text} »`, p.detail);
       return;
     }
     pending.current = null;
-    spoken.current = [...spoken.current, { text: p.text, t: now }].slice(-10);
-    log("dit", p.text, `${p.detail}, délai total ${((now - p.triggeredAt) / 1000).toFixed(1)} s`);
+    const turn = ++speechId.current;
+    flushing.current = turn; // réserve le lecteur pendant l'attente de préparation
+    const alive = () => sid === session.current && turn === speechId.current && phaseRef.current === "narration";
     setSpeaking(true);
     speakingNature.current = p.nature;
     speakingT0.current = p.triggeredAt;
-    const preparedId = await Promise.race([p.voiceId, new Promise<null>((r) => setTimeout(() => r(null), 300))]);
-    // La voix arrive en flux : elle démarre dès les premiers sons. Si OpenAI tarde trop, on se tait.
-    const r = await speaker.current.sayStream(p.text, () => {
-      const s = (Date.now() - p.triggeredAt) / 1000;
-      setReaction(s);
-      remote("premier son", `${s.toFixed(2)} s après l'image : ${p.text}`);
-    }, C.voiceWait, preparedId);
-    speakingNature.current = "";
-    setSpeaking(false);
-    if (r.error && /trop lente/.test(r.error)) log("tu", `Voix trop lente, phrase abandonnée : « ${p.text} »`, p.detail);
-    else if (r.error && r.via === "telephone") log("erreur", "La voix OpenAI n'a pas joué, voix du téléphone utilisée.", r.error);
-    const via = r.via;
-    lastSpeechEnd.current = Date.now();
-    setVoiceNote(via === "openai" ? (languageRef.current === "en" ? "OpenAI voice" : "voix OpenAI") : (languageRef.current === "en" ? "device voice" : "voix du téléphone"));
+    try {
+      const preparedId = await Promise.race([p.voiceId, new Promise<null>((r) => setTimeout(() => r(null), 300))]);
+      if (!alive() || Date.now() >= expiresAt || p.triggeredAt < newestQueued.current) return;
+      const playback = sp.sayStream(p.text, () => {
+        if (!alive()) return;
+        const sec = (Date.now() - p.triggeredAt) / 1000;
+        spoken.current = [...spoken.current, { text: p.text, t: Date.now() }].slice(-10);
+        log("dit", p.text, `${p.detail}, délai total ${sec.toFixed(1)} s`);
+        setReaction(sec);
+        remote("premier son", `${sec.toFixed(2)} s après l'image : ${p.text}`);
+      }, C.voiceWait, preparedId, expiresAt);
+      // La lecture est maintenant occupée : une info urgente peut encore la couper.
+      if (flushing.current === turn) flushing.current = null;
+      const result = await playback;
+      if (!alive()) return;
+      if (result.error && /trop lente/.test(result.error)) log("tu", `Voix trop lente, phrase abandonnée : « ${p.text} »`, p.detail);
+      else if (result.error && result.via === "telephone") log("erreur", "La voix OpenAI n'a pas joué, voix du téléphone utilisée.", result.error);
+      lastSpeechEnd.current = Date.now();
+      setVoiceNote(result.via === "openai" ? (languageRef.current === "en" ? "OpenAI voice" : "voix OpenAI") : (languageRef.current === "en" ? "device voice" : "voix du téléphone"));
+    } finally {
+      if (flushing.current === turn) flushing.current = null;
+      if (alive()) {
+        speakingNature.current = "";
+        setSpeaking(false);
+      }
+    }
   }
 
   useEffect(() => {
@@ -997,23 +1172,46 @@ export default function Murmure() {
       const ph = phaseRef.current;
       if (document.visibilityState === "hidden") {
         hiddenAt.current = Date.now();
+        if (ph === "narration" || ph === "cadrage") {
+          hiddenResume.current = ph;
+          resumePhase.current = ph;
+          invalidateWork();
+          setPhaseBoth("pause");
+          if (navigator.mediaSession) navigator.mediaSession.playbackState = "paused";
+        }
         return;
       }
       if (ph === "arret") return;
       void requestWakeLock();
       const was = hiddenAt.current;
       hiddenAt.current = null;
+      const resume = hiddenResume.current;
+      hiddenResume.current = null;
+      if (resume) {
+        invalidateWork();
+        lastJudgedGrid.current = null;
+        setPhaseBoth(resume);
+        if (navigator.mediaSession) navigator.mediaSession.playbackState = "playing";
+      }
       const track = streamRef.current?.getVideoTracks()[0];
       if (track && track.readyState === "ended" && !demoRef.current) {
-        void startCamera().catch(() => {});
+        void restartCamera("retour au premier plan");
       }
-      if (was && Date.now() - was > 1500) {
+      if (resume && was && Date.now() - was > 1500) {
         log("info", "Murmure était en pause pendant que l'écran était caché.");
         void speaker.current.say(localizedSpeech(languageRef.current, "resumeAfterHidden"));
       }
     };
     // Page quittée ou fermée : on rend la caméra tout de suite.
     const onHide = () => {
+      const ph = phaseRef.current;
+      if (ph === "narration" || ph === "cadrage") {
+        hiddenResume.current = ph;
+        resumePhase.current = ph;
+        setPhaseBoth("pause");
+      }
+      invalidateWork();
+      cameraEpoch.current += 1;
       streamRef.current?.getTracks().forEach((t) => t.stop());
     };
     document.addEventListener("visibilitychange", onVis);
@@ -1039,8 +1237,14 @@ export default function Murmure() {
 
   useEffect(
     () => () => {
+      session.current += 1;
+      cameraEpoch.current += 1;
+      for (const ctrl of requests.current) ctrl.abort();
+      requests.current.clear();
+      speaker.current.stop();
       timers.current.forEach((t) => window.clearInterval(t));
       streamRef.current?.getTracks().forEach((t) => t.stop());
+      void wakeRef.current?.release().catch(() => {});
     },
     [],
   );

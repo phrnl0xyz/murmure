@@ -12,7 +12,7 @@ async function voice(texte: string, signal: AbortSignal, language: "fr" | "en"):
   if (isMock() || process.env.TTS_MODE === "navigateur") return new Response(null, { status: 204 });
   const res = await openaiFetch("/audio/speech", speechBody(texte, language), signal);
   await debugSave("voix", null, { texte });
-  return new Response(res.body, { headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store" } });
+  return new Response(res.body, { headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store", "X-Murmure-Voice": "direct" } });
 }
 
 // POST : le téléphone reçoit le fichier entier (chemin de secours).
@@ -40,7 +40,7 @@ export async function GET(req: Request) {
     const prepared = id ? streamPrepared(id) : null;
     if (prepared) {
       await debugSave("voix", null, { texte: url.searchParams.get("t") ?? "", preparee: true });
-      return new Response(prepared, { headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store" } });
+      return new Response(prepared, { headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store", "X-Murmure-Voice": "prepared" } });
     }
     return await voice(url.searchParams.get("t") ?? "", req.signal, language);
   } catch (e) {

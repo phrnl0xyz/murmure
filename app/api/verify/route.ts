@@ -23,15 +23,13 @@ export async function POST(req: Request) {
       return Response.json(v);
     }
 
-    // Dans la rue, la position (« à droite ») n'est qu'une indication : on vérifie le contenu lu, présenté comme tel,
-    // sinon le vérificateur juge une citation d'affiche comme une affirmation à prouver.
-    const core = texte.replace(language === "en" ? /,?\s*(on your left|on your right|ahead)\s*\.?\s*$/i : /,?\s*(à gauche|à droite|devant)\s*\.?\s*$/i, "").trim();
+    // Vérifier la phrase réellement dite, sans transformer « à droite » en « devant ».
     const text = language === "en"
       ? mode === "monde"
-        ? `Photo taken outdoors by a blind person's phone. What they were told is ahead: “${core}”`
+        ? `Photo taken outdoors by a blind person's phone. Phrase to verify against the photo: “${texte}”`
         : `Photo of a television screen. Phrase to verify: “${texte}”`
       : mode === "monde"
-        ? `Photo prise dans la rue par le téléphone d'une personne aveugle. Ce qu'on lui a dit être devant elle : « ${core} »`
+        ? `Photo prise dans la rue par le téléphone d'une personne aveugle. Phrase à vérifier sur la photo : « ${texte} »`
         : `Photo d'un écran de télévision. Phrase à vérifier : « ${texte} »`;
     try {
       const a = await decisions({ text, image, questions: [question], signal: req.signal });

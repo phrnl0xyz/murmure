@@ -20,11 +20,11 @@ export function zone(vw: number, vh: number): Rect {
 }
 
 /** Réduit l'image en 144 cases de luminance moyenne. */
-export function captureGrid(video: HTMLVideoElement): Grid | null {
+export function captureGrid(video: HTMLVideoElement, columns = GRID_W, rows = GRID_H): Grid | null {
   if (!ready(video)) return null;
   gridCanvas ??= document.createElement("canvas");
-  const w = GRID_W * SAMPLE;
-  const h = GRID_H * SAMPLE;
+  const w = columns * SAMPLE;
+  const h = rows * SAMPLE;
   gridCanvas.width = w;
   gridCanvas.height = h;
   const ctx = gridCanvas.getContext("2d", { willReadFrequently: true });
@@ -32,12 +32,12 @@ export function captureGrid(video: HTMLVideoElement): Grid | null {
   const z = zone(video.videoWidth, video.videoHeight);
   ctx.drawImage(video, z.x, z.y, z.w, z.h, 0, 0, w, h);
   const px = ctx.getImageData(0, 0, w, h).data;
-  const grid = new Float32Array(GRID_W * GRID_H);
+  const grid = new Float32Array(columns * rows);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
       const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
-      grid[Math.floor(y / SAMPLE) * GRID_W + Math.floor(x / SAMPLE)] += lum / (SAMPLE * SAMPLE);
+      grid[Math.floor(y / SAMPLE) * columns + Math.floor(x / SAMPLE)] += lum / (SAMPLE * SAMPLE);
     }
   }
   return grid;
