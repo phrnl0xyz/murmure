@@ -5,6 +5,8 @@ Point your phone at the TV, or hold it against your chest in the street. Murmure
 
 Built for the OpenAI DevDay Community Hackathon Paris, October 2026. Tracks: Impact, Build in public.
 
+**Try it:** [murmure-devday.vercel.app](https://murmure-devday.vercel.app), on a phone with earbuds. An access code protects the OpenAI budget; judges received it with the submission.
+
 ## Why
 
 1.7 million people in France live with a visual impairment. In front of a football match they hear the crowd explode, but not why. In front of the weather forecast, "red alert here" means nothing if you cannot see the map. Audio description exists for some films, almost never for live TV, and never for the street.
