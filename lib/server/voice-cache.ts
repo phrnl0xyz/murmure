@@ -11,7 +11,8 @@ const cache = new Map<string, Entry>();
 const TTL = 30_000;
 
 export function voicePreparationEnabled(): boolean {
-  return !process.env.VERCEL;
+  // MURMURE_VOICE_PREP=0 reproduit en local les conditions de la production.
+  return !process.env.VERCEL && process.env.MURMURE_VOICE_PREP !== "0";
 }
 
 const VOICE_INSTRUCTIONS: Record<Language, string> = {

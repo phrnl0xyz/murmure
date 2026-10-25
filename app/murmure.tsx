@@ -26,7 +26,8 @@ const C = {
   minGap: 1000, // écart minimum entre deux phrases, sauf urgence
   urgent: 1.5, // priorité à partir de laquelle on parle tout de suite
   ttl: 4000, // une phrase en attente plus de 4 s est jetée
-  streetTextTtl: 6000, // un panneau ou nom de lieu vérifié laisse aussi le temps de démarrer la voix
+  streetTtl: 8000, // dans la rue, on marche : une info vérifiée reste utile 8 s après l'image
+  voiceWaitMonde: 4000, // dans la rue, la voix a 4 s pour démarrer, comptées quand on décide de parler
   staleDiff: 0.5, // description de scène : si l'image a changé à plus de 50 % avant de parler, on jette
   repeatWindow: 30000,
   repeatWindowMonde: 60000, // dans la rue, on repasse souvent devant la même enseigne
@@ -673,7 +674,7 @@ export default function Murmure() {
     const sid = session.current;
     const gone = () => sid !== session.current || phaseRef.current === "arret";
     const md = modeRef.current;
-    const deadline = t0 + (md === "monde" ? C.streetTextTtl : C.ttl * 2);
+    const deadline = t0 + (md === "monde" ? C.streetTtl : C.ttl * 2);
     const recent = recentTexts();
     const big = captureJpeg(video, 768, 0.8);
     const small = md === "monde" ? big : captureJpeg(video, 768, 0.72);
@@ -1106,8 +1107,8 @@ export default function Murmure() {
     const p = pending.current;
     if (!p || flushing.current !== null || phaseRef.current !== "narration") return;
     const sid = session.current;
-    const streetText = p.mode === "monde" && (p.nature === "panneau" || p.nature === "enseigne_ou_lieu");
-    const expiresAt = p.triggeredAt + (streetText ? C.streetTextTtl : C.ttl * (p.mode === "monde" || p.nature === "action" || p.nature === "scene" ? 1 : 2));
+    // Dans la rue, mieux vaut une info dite un peu tard que des phrases annulées en boucle.
+    const expiresAt = p.triggeredAt + (p.mode === "monde" ? C.streetTtl : C.ttl * (p.nature === "action" || p.nature === "scene" ? 1 : 2));
     const now = Date.now();
     if (now >= expiresAt) {
       pending.current = null;
@@ -1159,7 +1160,7 @@ export default function Murmure() {
         log("dit", p.text, `${p.detail}, délai total ${sec.toFixed(1)} s`);
         setReaction(sec);
         remote("premier son", `${sec.toFixed(2)} s après l'image : ${p.text}`);
-      }, C.voiceWait, preparedId, expiresAt);
+      }, p.mode === "monde" ? C.voiceWaitMonde : C.voiceWait, preparedId, p.mode === "monde" ? Infinity : expiresAt);
       // La lecture est maintenant occupée : une info urgente peut encore la couper.
       if (flushing.current === turn) flushing.current = null;
       const result = await playback;
