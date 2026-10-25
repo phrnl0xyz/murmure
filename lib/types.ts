@@ -12,3 +12,4 @@ export type Verdict = {
 
 export type Description = { texte: string; certitude: number; ms: number };
 export type Verification = { conforme: number; source: Verdict["source"]; ms: number };
+export type Observation = { verdict: Verdict; description: Description | null; verification: Verification | null };

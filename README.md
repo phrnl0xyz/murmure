@@ -22,6 +22,7 @@ Phone against the chest, Murmure names the place, buses and trams, store signs, 
 It never describes passers-by and never says it is safe to cross. It does not replace a white cane or a guide dog, and it says so when it starts.
 Walking motion alone does not discard a verified landmark. Street observations must begin playback within four seconds of their sampled frame.
 Small visual changes can trigger a new street analysis. A periodic check is due after two seconds, subject to the two-request concurrency limit. A low relevance score from the judge does not suppress a candidate before the narrator and verifier check it; unreadable images, uncertain or repeated descriptions and failed verification still prevent speech.
+The phone uploads each street frame once. The server runs the judge and narrator in parallel, then verifies the candidate using that same frame. This avoids sending the frame again over the mobile uplink for each step. It does not guarantee a four-second response on a weak connection.
 If the screen is lost, Murmure checks the framing again and can switch to this mode when no screen is found.
 
 ## How it works
@@ -31,7 +32,7 @@ If the screen is lost, Murmure checks the framing again and can switch to this m
 | Judge | Decisions API, `gpt-6-luna` | Is there a screen? Is something new and worth saying? About 0.3 s. |
 | Narrator | `gpt-6.1-sol`, low reasoning effort, 768 px frames | Writes one short sentence. About 1.5 s. |
 | Verifier | Decisions API, `gpt-6-luna` | Checks sentences against the image in street mode and the judge-based path. Continuous screen commentary uses the narrator's confidence and freshness checks. |
-| Voice | `gpt-4o-mini-tts`, voice `marin` | Direct streaming by default. The phone can preload one next phrase during a sufficiently long current playback. Local runs can prepare the voice during verification. |
+| Voice | `gpt-4o-mini-tts`, voice `marin` | Direct streaming by default. The phone can preload one next phrase during a sufficiently long current playback. Local runs also support server voice preparation. |
 
 - **Camera only, no microphone.** On iPhone, opening the microphone in the browser disrupts audio output, especially with Bluetooth earbuds.
 - **The phone does the cheap work.** It compares frames locally, with a finer grid for small changes in screen commentary and street mode. Still pictures are checked less often, with a periodic refresh for new text.

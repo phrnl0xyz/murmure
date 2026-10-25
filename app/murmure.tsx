@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { captureGrid, captureJpeg, gridDiff, type Grid } from "@/lib/client/vision";
 import { Speaker } from "@/lib/client/speaker";
 import { overlap } from "@/lib/client/text";
-import type { Description, Verdict, Verification } from "@/lib/types";
+import type { Description, Verdict, Verification, Observation } from "@/lib/types";
 import { normalizeLanguage, spoken as localizedSpeech, t, type Language } from "@/lib/language";
 
 type Kind = "dit" | "tu" | "cadrage" | "info" | "erreur";
@@ -674,8 +674,8 @@ export default function Murmure() {
     const md = modeRef.current;
     const deadline = t0 + C.ttl * (md === "monde" ? 1 : 2);
     const recent = recentTexts();
-    const small = captureJpeg(video, 768, 0.72);
     const big = captureJpeg(video, 768, 0.8);
+    const small = md === "monde" ? big : captureJpeg(video, 768, 0.72);
     if (!small || !big) return;
     const ph = phaseRef.current;
     const sp = speaker.current;
@@ -684,10 +684,12 @@ export default function Murmure() {
     const rejectedSpan = md === "monde" ? C.rejectedWindowMonde : C.repeatWindow;
     const refused = rejected.current.filter((r) => t0 - r.t < rejectedSpan).map((r) => r.text);
     const describeBody = { image: big, recent: [...recent, ...refused], detail: detailRef.current, demoTime, mode: md, vitesse: vitesseRef.current, language: languageRef.current };
+    const observation = md === "monde" ? await request<Observation>("/api/observe", describeBody, deadline) : null;
+    if (gone()) return;
 
     let spec: { ctrl: AbortController; p: Promise<Description> } | null = null;
     // Le conteur part à l'avance seulement sur un vrai changement d'image ; sinon il attend l'avis du juge (0,3 s).
-    if (ph === "narration" && (ch >= C.speculative || md === "monde")) {
+    if (md !== "monde" && ph === "narration" && ch >= C.speculative) {
       const ctrl = new AbortController();
       const p = request<Description>("/api/describe", describeBody, deadline, ctrl.signal);
       p.catch(() => {});
@@ -695,7 +697,7 @@ export default function Murmure() {
     }
     const abortSpec = () => spec?.ctrl.abort();
 
-    const v = await request<Verdict>("/api/judge", { image: small, recent, mode: md, language: languageRef.current }, deadline);
+    const v = observation ? observation.verdict : await request<Verdict>("/api/judge", { image: small, recent, mode: md, language: languageRef.current }, deadline);
     if (gone()) return abortSpec();
     setJudgeSource(sourceLabel(v.source, languageRef.current));
     if (v.source === "simulation") setSimulation(true);
@@ -775,10 +777,10 @@ export default function Murmure() {
       return;
     }
 
-    const d = spec ? await spec.p : await request<Description>("/api/describe", describeBody, deadline);
+    const d = observation ? observation.description : spec ? await spec.p : await request<Description>("/api/describe", describeBody, deadline);
     if (gone()) return;
-    if (!d.texte || d.certitude < C.certMin) {
-      log("tu", `Description incertaine : « ${d.texte} »`, `${scores}, certitude ${pct(d.certitude)}`);
+    if (!d || !d.texte || d.certitude < C.certMin) {
+      log("tu", `Description incertaine : « ${d?.texte ?? ""} »`, `${scores}, certitude ${pct(d?.certitude ?? 0)}`);
       return;
     }
     const repeatSpan = md === "monde" ? C.repeatWindowMonde : C.repeatWindow;
@@ -792,7 +794,8 @@ export default function Murmure() {
     const voiceId = sp.preparationEnabled ? sp.prepare(d.texte) : null;
     // Une action va trop vite pour attendre le vérificateur : elle part tout de suite. Les textes lus restent vérifiés.
     const ver: Verification =
-      md === "ecran" && v.nature === "action"
+      observation ? observation.verification ?? { conforme: 0, source: v.source, ms: 0 }
+        : md === "ecran" && v.nature === "action"
         ? { conforme: 1, source: v.source, ms: 0 }
         : await request<Verification>("/api/verify", { image: big, texte: d.texte, mode: md, language: languageRef.current }, deadline);
     if (gone()) return;
