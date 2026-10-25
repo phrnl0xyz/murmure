@@ -1,0 +1,306 @@
+/* Style suisse : gris clair, noir, un seul rouge signal. Clair ou sombre selon le téléphone. */
+:root {
+  color-scheme: light dark;
+  --bg: #efefef;
+  --card: #e2e2e2;
+  --fg: #111111;
+  --muted: #8a8a8a;
+  --dim: #c6c6c6;
+  --line: #d6d6d6;
+  --red: #f0402f;
+  --taupe: #a59e97;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e0e0e;
+    --card: #1e1e1e;
+    --fg: #f2f2f2;
+    --muted: #8c8c8c;
+    --dim: #3a3a3a;
+    --line: #2a2a2a;
+    --red: #ff4a3a;
+    --taupe: #5f5953;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body {
+  font-family: var(--font-sans), "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+h1, p, ol, ul { margin: 0; }
+button { font: inherit; color: inherit; cursor: pointer; border: 0; background: none; padding: 0; }
+button:focus-visible, summary:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+.hidden { display: none !important; }
+/* Lu par VoiceOver, invisible à l'écran. */
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+.app {
+  max-width: 480px;
+  margin: 0 auto;
+  min-height: 100dvh;
+  padding: calc(env(safe-area-inset-top) + 10px) 16px calc(env(safe-area-inset-bottom) + 16px);
+}
+
+/* Barre du haut */
+.top { display: flex; align-items: center; justify-content: space-between; min-height: 48px; }
+.brand { font-size: 21px; font-weight: 700; letter-spacing: -0.04em; display: inline-flex; align-items: flex-start; }
+.brand-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--red); margin: 3px 0 0 3px; }
+.language-pick { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; font-weight: 600; }
+.language-pick select { height: 38px; padding: 0 10px; border: 0; border-radius: 10px; background: var(--card); color: var(--fg); font: inherit; font-size: 14px; }
+.seg { display: inline-flex; padding: 3px; border-radius: 10px; background: var(--card); }
+.seg button { height: 36px; padding: 0 14px; border-radius: 8px; font-size: 14px; font-weight: 600; color: var(--muted); }
+.seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+
+/* Accueil : tout tient sur un écran de téléphone, sans défiler. */
+/* L'accueil occupe toute la hauteur : titre et modes en haut, réglages en bas, l'espace s'adapte à l'écran. */
+.app:not(.is-running) { display: flex; flex-direction: column; }
+.home { flex: 1; display: flex; flex-direction: column; justify-content: space-between; gap: 16px; padding-top: clamp(8px, 3vh, 32px); }
+.home-top { display: flex; flex-direction: column; gap: 16px; }
+.home-middle { display: flex; flex-direction: column; gap: clamp(10px, 1.6vh, 16px); }
+.home-foot { display: flex; flex-direction: column; gap: clamp(10px, 1.6vh, 14px); }
+
+.hero h1 { font-size: clamp(32px, 9.5vw, 42px); line-height: 1.04; font-weight: 650; letter-spacing: -0.04em; text-wrap: balance; }
+.hero-line { margin-top: clamp(10px, 2vh, 18px); font-size: 18px; font-weight: 500; color: var(--fg); letter-spacing: -0.01em; }
+.hero-stat { margin-top: 6px; font-size: 13px; color: var(--muted); }
+.checking { font-size: 13px; color: var(--muted); }
+
+/* Les deux modes : de vrais boutons, pleins, avec une flèche. */
+.modes { display: grid; gap: clamp(10px, 1.6vh, 16px); }
+.mode {
+  display: grid;
+  grid-template-columns: 48px 1fr 24px;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: clamp(76px, 10.5vh, 100px);
+  padding: 14px 18px 14px 16px;
+  text-align: left;
+  border-radius: 18px;
+  background: var(--card);
+  border: 1.5px solid var(--line);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04), 0 6px 16px -10px rgba(0, 0, 0, 0.35);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.mode:active:not(:disabled) { transform: scale(0.98); box-shadow: none; }
+.mode:disabled, .demo-button:disabled { opacity: 0.4; cursor: not-allowed; }
+.mode-main { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.mode-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mode-title { font-size: 21px; font-weight: 650; letter-spacing: -0.03em; line-height: 1.1; }
+.mode-sub { font-size: 13px; opacity: 0.65; line-height: 1.3; }
+.mode .arrow { width: 22px; height: 22px; }
+
+/* Le motif de la marque, en petit, dans le bouton principal. */
+.mode-icon { position: relative; width: 48px; height: 48px; border-radius: 12px; overflow: hidden; display: grid; grid-template-columns: 1fr 1fr; background: var(--card); }
+.mode-icon i:first-child { background: var(--taupe); border-top-right-radius: 24px; margin-top: 18px; }
+.mode-icon i:nth-child(2) { background: linear-gradient(135deg, #ff6a4d, var(--red)); border-top-left-radius: 24px; margin-top: 18px; }
+.mode-icon b { position: absolute; left: 50%; top: 58%; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; background: #0c0c0c; }
+.mode-icon-around { background: var(--bg); display: block; }
+.mode-icon-around b { top: 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; background: var(--red); box-shadow: 0 0 0 6px color-mix(in srgb, var(--red) 25%, transparent), 0 0 0 12px color-mix(in srgb, var(--red) 10%, transparent); }
+
+/* Réglages regroupés dans un seul bloc. */
+.settings-card { border-radius: 16px; background: var(--card); overflow: hidden; }
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 54px;
+  padding: 0 8px 0 16px;
+  font-weight: 600;
+  font-size: 15px;
+}
+.setting-row + .setting-row { border-top: 1px solid var(--line); }
+.setting-button { text-align: left; }
+.setting-value { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-weight: 500; padding-right: 6px; }
+.setting-value .arrow { width: 18px; height: 18px; }
+.setting-row select {
+  max-width: 62%;
+  height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+}
+.setting-row .seg button { height: 34px; padding: 0 12px; font-size: 13px; }
+
+.demo-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 48px;
+  border-radius: 999px;
+  border: 1.5px solid var(--line);
+  font-size: 15px;
+  font-weight: 600;
+}
+.demo-button .arrow { width: 18px; height: 18px; }
+.arrow { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.fine { font-size: 12px; line-height: 1.4; color: var(--muted); }
+
+.notice { background: var(--card); border-radius: 14px; padding: 12px 14px; font-size: 14px; color: var(--muted); }
+.notice strong { display: block; color: var(--fg); font-weight: 600; margin-bottom: 2px; }
+.notice.is-error { box-shadow: inset 3px 0 0 var(--red); }
+.notice.is-error strong { color: var(--red); }
+
+/* En marche : la caméra en plein écran, tout le reste posé dessus. */
+.app.is-running { padding: 0; max-width: none; }
+.live { position: fixed; inset: 0; background: #000; color: #fff; overflow: hidden; }
+.cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.cam.is-contain { object-fit: contain; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.55);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  font-size: 13px;
+  font-weight: 600;
+}
+.hud-top {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 12px);
+  left: 12px;
+  right: 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.chip-reaction { margin-left: 4px; padding-left: 8px; border-left: 1px solid rgba(255, 255, 255, 0.3); font-variant-numeric: tabular-nums; color: rgba(255, 255, 255, 0.75); }
+.digits { font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.digits-dim { color: rgba(255, 255, 255, 0.45); }
+.rec { width: 9px; height: 9px; border-radius: 50%; background: var(--red); }
+.rec-cadrage { animation: blink 1.2s ease-in-out infinite; }
+.rec-pause { background: #9a9a9a; }
+@keyframes blink { 50% { opacity: 0.2; } }
+
+.hud-notes { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-bottom: 12px; }
+.hud-notes:empty { display: none; }
+
+/* Journal discret : quatre lignes en petit, en haut à droite. */
+.minilog {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 58px);
+  right: 12px;
+  max-width: 64%;
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  pointer-events: none;
+}
+.minilog li {
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.82);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.minilog li:nth-child(n + 3) { opacity: 0.6; }
+.minilog b { font-weight: 700; color: #fff; }
+.minilog .k-dit b, .minilog .k-erreur b { color: #ff8a7e; }
+.minilog-voice { opacity: 0.6; }
+
+.note {
+  max-width: 100%;
+  padding: 6px 10px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.55);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.85);
+}
+.note-strong { background: var(--red); color: #fff; font-weight: 600; font-size: 13px; }
+
+/* Les phrases défilent vers le haut, comme des commentaires sur un live. */
+.hud-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 90px 12px calc(env(safe-area-inset-bottom) + 14px);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.85) 0%, rgba(0, 0, 0, 0.6) 55%, transparent 100%);
+}
+.comments { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; max-width: 88%; }
+.comments li { display: flex; flex-direction: column; gap: 2px; opacity: 0.55; animation: rise 0.35s ease-out; }
+.comments li:nth-last-child(2) { opacity: 0.75; }
+.comments li.is-latest { opacity: 1; }
+.c-meta { font-size: 11px; font-weight: 600; color: rgba(255, 255, 255, 0.7); font-variant-numeric: tabular-nums; }
+.c-live { color: #fff; display: inline-flex; align-items: center; gap: 6px; }
+.c-live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--red); animation: blink 0.8s ease-in-out infinite; }
+.c-text { font-size: 14px; line-height: 1.3; font-weight: 600; letter-spacing: -0.01em; }
+.comments li.is-latest .c-text { font-size: 19px; line-height: 1.2; letter-spacing: -0.02em; }
+.c-empty { font-size: 13px; color: rgba(255, 255, 255, 0.75); margin-bottom: 14px; }
+@keyframes rise { from { transform: translateY(14px); } to { transform: none; } }
+
+.hud-keys { display: grid; grid-template-columns: 1fr 1.6fr 1fr; gap: 8px; }
+.hud-keys > span { display: block; }
+.hk {
+  height: 56px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.16);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  display: grid;
+  place-items: center;
+}
+.hk:active { transform: scale(0.97); }
+.hk-main { background: #fff; color: #111; font-size: 16px; }
+.hk-stop { background: var(--red); }
+.stop-square { width: 18px; height: 18px; border-radius: 4px; background: #fff; }
+
+.history-note { font-size: 13px; color: var(--muted); margin: 4px 0 8px; }
+.history { list-style: none; padding: 0; }
+.history li { display: grid; gap: 2px; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.history .kind { font-size: 12px; font-weight: 600; color: var(--muted); }
+.history time { font-weight: 400; margin-left: 6px; font-variant-numeric: tabular-nums; }
+.history small { font-size: 12px; color: var(--muted); word-break: break-word; }
+.k-dit .kind { color: var(--red); }
+.k-dit .text { font-weight: 600; }
+.k-erreur .kind { color: var(--red); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* Petits écrans (iPhone SE, mini) : un peu plus compact pour ne jamais défiler. */
+@media (max-height: 700px) {
+  .hero h1 { font-size: 28px; }
+  .hero-line { margin-top: 8px; font-size: 15px; }
+  .hero-stat { font-size: 12px; }
+  .home { gap: 12px; padding-top: 4px; }
+  .home-top { gap: 12px; }
+  .mode { min-height: 66px; padding: 10px 14px; }
+  .mode-icon { width: 42px; height: 42px; }
+  .mode { grid-template-columns: 42px 1fr 22px; }
+  .mode-title { font-size: 19px; }
+  .setting-row { min-height: 48px; }
+  .demo-button { min-height: 44px; }
+  .fine { font-size: 11px; }
+}
