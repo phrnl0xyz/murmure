@@ -158,9 +158,10 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--red); out
 
 /* En marche : la caméra en plein écran, tout le reste posé dessus. */
 .app.is-running { padding: 0; max-width: none; }
-.live { position: fixed; inset: 0; background: #000; color: #fff; overflow: hidden; }
-.cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.cam.is-contain { object-fit: contain; }
+/* Sur ordinateur, même colonne que l'accueil : on garde l'allure d'un téléphone. */
+.live { position: fixed; inset: 0; margin: 0 auto; max-width: 480px; background: #000; color: #fff; overflow: hidden; }
+/* Image entière, sans rognage : on voit exactement ce que Murmure analyse. */
+.cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 .chip {
   display: inline-flex;
   align-items: center;

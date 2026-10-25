@@ -186,6 +186,7 @@ export default function Murmure() {
   const [reaction, setReaction] = useState<number | null>(null); // secondes entre l'image et le premier son
   const [startedAt, setStartedAt] = useState(0);
   const [demoVideo, setDemoVideo] = useState<string | null>(null);
+  const [camRatio, setCamRatio] = useState<number | null>(null); // largeur / hauteur de l'image de la caméra
   const [cams, setCams] = useState<{ id: string; label: string }[]>([]);
   const [camId, setCamId] = useState(""); // "" : automatique, caméra arrière
   // Vitesse du conteur : « eco » = palier fast (prix x2), « rapide » = palier ultrafast (prix x6).
@@ -389,7 +390,8 @@ export default function Murmure() {
     const constraints: MediaStreamConstraints = {
       video: deviceId
         ? { deviceId: { exact: deviceId } }
-        : { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        // 4:3 = tout le capteur de l'iPhone ; en 16:9 l'image est rognée et paraît zoomée.
+        : { facingMode: { ideal: "environment" }, width: { ideal: 1440 }, height: { ideal: 1080 } },
       audio: false, // jamais de micro : voir le cadrage, section 6
     };
     let stream: MediaStream;
@@ -1404,8 +1406,21 @@ export default function Murmure() {
         </section>
       )}
 
-      <section className={running ? "live" : "live hidden"} aria-label={t(language, "live")}>
-        <video ref={videoRef} className={demoVideo ? "cam is-contain" : "cam"} playsInline muted aria-hidden="true" />
+      <section
+        className={running ? "live" : "live hidden"}
+        aria-label={t(language, "live")}
+        // Sur ordinateur, la zone prend le format de la caméra : une image en largeur remplit l'écran sans bandes.
+        style={camRatio ? { maxWidth: `max(480px, calc(100dvh * ${camRatio.toFixed(3)}))` } : undefined}
+      >
+        <video
+          ref={videoRef}
+          className="cam"
+          playsInline
+          muted
+          aria-hidden="true"
+          onLoadedMetadata={(e) => setCamRatio(e.currentTarget.videoHeight ? e.currentTarget.videoWidth / e.currentTarget.videoHeight : null)}
+          onResize={(e) => setCamRatio(e.currentTarget.videoHeight ? e.currentTarget.videoWidth / e.currentTarget.videoHeight : null)}
+        />
 
         <p className="sr-only">
           {mode === "monde" ? t(language, "liveAround") : t(language, "liveScreen")}
