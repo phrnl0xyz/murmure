@@ -54,6 +54,7 @@ const C = {
   commentaryStill: 0.08, // en dessous de 8 % de l'image changée, on considère l'image immobile
   commentaryTextChange: 4 / (64 * 36), // quatre petites cases suffisent pour revérifier un texte
   commentaryTextEvery: 2000,
+  commentaryVoiceUntil: 6000, // la voix d'une phrase choisie peut démarrer jusqu'à 6 s après l'image
   commentaryFresh: 2500, // une phrase en réserve de moins de 2,5 s suffit : inutile d'en rédiger d'autres
   screenCheckEvery: 4000, // contrôle du cadrage en parallèle du commentaire
   screenCheckConfirm: 500, // confirmer rapidement un écran perdu avant d'interrompre
@@ -965,7 +966,8 @@ export default function Murmure() {
               },
               C.voiceWait,
               id,
-              r.t0 + C.ttl,
+              // Choisie à moins de 4 s, la phrase garde le temps de faire démarrer la voix.
+              r.t0 + C.commentaryVoiceUntil,
             )
             .then((res) => {
               if (!voiceAlive()) return;
