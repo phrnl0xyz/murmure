@@ -31,6 +31,7 @@ const C = {
   repeatWindowMonde: 60000, // dans la rue, on repasse souvent devant la même enseigne
   rejectedWindowMonde: 3000, // une nouvelle vue plus nette peut faire vérifier de nouveau un premier refus
   mondeEvery: 1000,
+  mondeRefresh: 2000, // même un petit changement reste surveillé sans attendre huit secondes
   speculative: 0.15, // l'action va vite : le conteur part dès qu'une image change vraiment
   noScreenSwitch: 5, // pendant le cadrage, 5 analyses sans écran : passage automatique au mode rue
   repeatOverlap: 0.6,
@@ -670,7 +671,8 @@ export default function Murmure() {
   async function analyse(video: HTMLVideoElement, grid: Grid, ch: number, t0: number) {
     const sid = session.current;
     const gone = () => sid !== session.current || phaseRef.current === "arret";
-    const deadline = t0 + C.ttl * 2; // les textes restent utiles plus longtemps qu'une action
+    const md = modeRef.current;
+    const deadline = t0 + C.ttl * (md === "monde" ? 1 : 2);
     const recent = recentTexts();
     const small = captureJpeg(video, 768, 0.72);
     const big = captureJpeg(video, 768, 0.8);
@@ -679,7 +681,6 @@ export default function Murmure() {
     const sp = speaker.current;
     // Seulement utile à la simulation sans clé, pour suivre le script de la vidéo de test.
     const demoTime = demoRef.current ? video.currentTime : undefined;
-    const md = modeRef.current;
     const rejectedSpan = md === "monde" ? C.rejectedWindowMonde : C.repeatWindow;
     const refused = rejected.current.filter((r) => t0 - r.t < rejectedSpan).map((r) => r.text);
     const describeBody = { image: big, recent: [...recent, ...refused], detail: detailRef.current, demoTime, mode: md, vitesse: vitesseRef.current, language: languageRef.current };
@@ -766,7 +767,9 @@ export default function Murmure() {
     const sceneTime =
       md === "monde" ? quietFor >= C.sceneAfterMonde : v.nature === "scene" && quietFor >= C.sceneAfter;
     const minImportant = md === "monde" ? C.importantMinMonde : C.importantMin;
-    if ((v.important < minImportant && !sceneTime) || (v.nature === "rien" && !sceneTime)) {
+    // Dans la rue, l'intérêt estimé ne doit pas jeter une lecture avant même sa vérification.
+    // Le conteur, l'anti-répétition et le vérificateur restent obligatoires.
+    if (md !== "monde" && ((v.important < minImportant && !sceneTime) || (v.nature === "rien" && !sceneTime))) {
       abortSpec();
       log("tu", "Rien de nouveau à dire", scores);
       return;
@@ -786,7 +789,7 @@ export default function Murmure() {
       return;
     }
     // La voix est lancée côté serveur dès maintenant, en parallèle de la vérification.
-    const voiceId = sp.prepare(d.texte);
+    const voiceId = sp.preparationEnabled ? sp.prepare(d.texte) : null;
     // Une action va trop vite pour attendre le vérificateur : elle part tout de suite. Les textes lus restent vérifiés.
     const ver: Verification =
       md === "ecran" && v.nature === "action"
@@ -811,7 +814,7 @@ export default function Murmure() {
       text: d.texte,
       nature: v.nature,
       mode: md,
-      voiceId,
+      voiceId: voiceId ?? sp.prepare(d.texte),
       priority: v.priorite,
       grid,
       triggeredAt: t0,
@@ -1029,7 +1032,7 @@ export default function Murmure() {
     const video = videoRef.current;
     if (!video) return;
     const now = Date.now();
-    const grid = captureGrid(video);
+    const grid = modeRef.current === "monde" ? captureGrid(video, 64, 36) : captureGrid(video);
     if (!grid) {
       if (now - lastFrameAt.current > C.frameWatchdog && !warnedNoFrame.current) {
         warnedNoFrame.current = true;
@@ -1043,7 +1046,7 @@ export default function Murmure() {
     // Un vrai capteur a toujours un peu de bruit : des images strictement identiques veulent dire caméra figée.
     const prev = prevGrid.current;
     prevGrid.current = grid;
-    if (prev && !demoRef.current) {
+    if (prev && prev.length === grid.length && !demoRef.current) {
       let sum = 0;
       for (let i = 0; i < grid.length; i++) sum += Math.abs(grid[i] - prev[i]);
       frozen.current = sum / grid.length < 0.01 ? frozen.current + 1 : 0;
@@ -1060,12 +1063,13 @@ export default function Murmure() {
       return;
     }
     const ref = lastJudgedGrid.current;
-    const ch = ref ? gridDiff(ref, grid) : 1;
+    const ch = ref && ref.length === grid.length ? gridDiff(ref, grid) : 1;
     if (inFlight.current >= C.parallel) return;
     const since = now - lastJudgeAt.current;
     if (modeRef.current === "monde" && since < C.mondeEvery) return;
-    const force = ph === "cadrage" ? since >= C.forceFraming : since >= C.forceNarration;
-    if (ch < C.changeThreshold && !force) return;
+    const force = ph === "cadrage" ? since >= C.forceFraming : since >= (modeRef.current === "monde" ? C.mondeRefresh : C.forceNarration);
+    const threshold = modeRef.current === "monde" ? C.commentaryTextChange : C.changeThreshold;
+    if (ch < threshold && !force) return;
     inFlight.current += 1;
     const sid = session.current;
     lastJudgeAt.current = now;

@@ -56,12 +56,22 @@ export class Speaker {
 
   private operation: AbortController | null = null;
   private preparations = new Set<AbortController>();
+  private nextVoice: { key: string; ctrl: AbortController; voice: Promise<Blob | null>; timer: ReturnType<typeof setTimeout> } | null = null;
+
+  private discardNextVoice() {
+    if (!this.nextVoice) return;
+    clearTimeout(this.nextVoice.timer);
+    this.nextVoice.ctrl.abort();
+    this.nextVoice = null;
+  }
 
   private resetAudio() {
     if (this.audio) {
       this.audio.onplaying = null;
       this.audio.onended = null;
       this.audio.onerror = null;
+      this.audio.onwaiting = null;
+      this.audio.onstalled = null;
       this.audio.pause();
       this.audio.removeAttribute("src");
       this.audio.load(); // annule aussi un flux qui attend encore ses premiers octets
@@ -81,6 +91,7 @@ export class Speaker {
 
   stop() {
     this.interrupt();
+    this.discardNextVoice();
     for (const ctrl of this.preparations) ctrl.abort();
     this.preparations.clear();
   }
@@ -125,7 +136,25 @@ export class Speaker {
 
   /** La préparation est annulable même si aucune lecture n'a encore commencé. */
   async prepare(text: string): Promise<string | null> {
-    if (!this.preparationEnabled) return null;
+    if (!this.preparationEnabled) {
+      // Le navigateur conserve au plus une voix, sans dépendre d'une instance serveur.
+      // On ne retarde jamais le premier son pour charger un fichier entier : seulement
+      // pendant une lecture dont il reste au moins 1,5 s connues. Sinon, flux direct.
+      const key = `${this.language}:${text}`;
+      if (this.nextVoice?.key === key) return null;
+      this.discardNextVoice();
+      const remaining = this.audio ? (this.audio.duration - this.audio.currentTime) / RATE : 0;
+      if (!this.busy || !Number.isFinite(remaining) || remaining < 1.5) return null;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => {
+        ctrl.abort();
+        if (this.nextVoice?.ctrl === ctrl) this.nextVoice = null;
+      }, 3500);
+      const voice = this.fetchVoice(text, ctrl.signal).then(blob => ctrl.signal.aborted ? null : blob, () => null);
+      this.nextVoice = { key, ctrl, voice, timer };
+      this.trace("voix suivante en préparation");
+      return null;
+    }
     const ctrl = new AbortController();
     this.preparations.add(ctrl);
     const timer = setTimeout(() => ctrl.abort(), 3500);
@@ -154,6 +183,8 @@ export class Speaker {
     return new Promise((resolve, reject) => {
       let started = false;
       let settled = false;
+      const requestedAt = Date.now();
+      let waitingAt: number | null = null;
       const cleanup = () => {
         clearTimeout(guard);
         clearTimeout(end);
@@ -161,6 +192,8 @@ export class Speaker {
         if (audio.onplaying === playing) audio.onplaying = null;
         if (audio.onended === ended) audio.onended = null;
         if (audio.onerror === failed) audio.onerror = null;
+        if (audio.onwaiting === waiting) audio.onwaiting = null;
+        if (audio.onstalled === stalled) audio.onstalled = null;
       };
       const finish = (error?: unknown) => {
         if (settled) return;
@@ -175,6 +208,10 @@ export class Speaker {
       const guard = setTimeout(() => ctrl.abort(new Error("voix trop lente à démarrer")), Math.max(0, deadline - Date.now()));
       const end = setTimeout(() => finish(new Error("lecture audio trop longue")), 20000);
       const playing = () => {
+        if (waitingAt !== null) {
+          this.trace("audio repris", `${Date.now() - waitingAt} ms de coupure`);
+          waitingAt = null;
+        }
         if (started || settled) return;
         if (ctrl.signal.aborted || Date.now() >= deadline) {
           finish(ctrl.signal.reason ?? new Error("voix trop lente à démarrer"));
@@ -182,8 +219,15 @@ export class Speaker {
         }
         started = true;
         clearTimeout(guard);
+        this.trace("audio démarré", `${Date.now() - requestedAt} ms après demande de lecture`);
         onStart?.();
       };
+      const waiting = () => {
+        if (!started || settled || waitingAt !== null) return;
+        waitingAt = Date.now();
+        this.trace("audio en attente", "lecture interrompue après le premier son");
+      };
+      const stalled = () => { if (!settled) this.trace("chargement audio bloqué", started ? "pendant la lecture" : "avant le premier son"); };
       const ended = () => {
         if (settled || ctrl.signal.aborted) return;
         if (!started) return finish(new Error("lecture audio sans son"));
@@ -195,6 +239,8 @@ export class Speaker {
       audio.onplaying = playing;
       audio.onended = ended;
       audio.onerror = failed;
+      audio.onwaiting = waiting;
+      audio.onstalled = stalled;
       audio.src = src;
       audio.defaultPlaybackRate = RATE;
       audio.playbackRate = RATE;
@@ -203,10 +249,24 @@ export class Speaker {
   }
 
   async sayStream(text: string, onStart?: () => void, maxWait = 3500, preparedId?: string | null, expiresAt = Infinity): Promise<Spoken> {
+    const next = this.nextVoice?.key === `${this.language}:${text}` ? this.nextVoice : null;
+    if (next) {
+      this.nextVoice = null;
+      clearTimeout(next.timer);
+    } else this.discardNextVoice();
     const op = this.begin();
     const deadline = Math.min(expiresAt, Date.now() + maxWait);
+    const cancelNext = () => next?.ctrl.abort();
+    op.ctrl.signal.addEventListener("abort", cancelNext, { once: true });
     try {
       if (Date.now() >= deadline) return { via: "openai", error: "voix trop lente à démarrer" };
+      if (next) {
+        const blob = await this.beforeDeadline(next.voice, op.ctrl, deadline);
+        if (blob) {
+          this.trace("voix préparée sur le téléphone");
+          return await this.sayFile(text, op.ctrl, deadline, onStart, Promise.resolve(blob));
+        }
+      }
       if (this.audio && this.streamFailures < 2) {
         const id = preparedId ? `&id=${encodeURIComponent(preparedId)}` : "";
         const src = `/api/speak?k=${encodeURIComponent(this.code)}&t=${encodeURIComponent(text)}&language=${this.language}${id}`;
@@ -225,6 +285,8 @@ export class Speaker {
     } catch (e) {
       return { via: "openai", error: op.epoch !== this.epoch ? "annulé" : e instanceof Error ? e.message : String(e) };
     } finally {
+      op.ctrl.signal.removeEventListener("abort", cancelNext);
+      next?.ctrl.abort();
       if (op.epoch === this.epoch) {
         this.operation = null;
         this.busy = false;

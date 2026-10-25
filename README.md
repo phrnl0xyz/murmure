@@ -21,6 +21,7 @@ While one sentence is being spoken, the next one is already being written from a
 Phone against the chest, Murmure names the place, buses and trams, store signs, street plates, notices and objects right in front of you, with a single direction: left, right or ahead.
 It never describes passers-by and never says it is safe to cross. It does not replace a white cane or a guide dog, and it says so when it starts.
 Walking motion alone does not discard a verified landmark. Street observations must begin playback within four seconds of their sampled frame.
+Small visual changes can trigger a new street analysis. A periodic check is due after two seconds, subject to the two-request concurrency limit. A low relevance score from the judge does not suppress a candidate before the narrator and verifier check it; unreadable images, uncertain or repeated descriptions and failed verification still prevent speech.
 If the screen is lost, Murmure checks the framing again and can switch to this mode when no screen is found.
 
 ## How it works
@@ -30,12 +31,13 @@ If the screen is lost, Murmure checks the framing again and can switch to this m
 | Judge | Decisions API, `gpt-6-luna` | Is there a screen? Is something new and worth saying? About 0.3 s. |
 | Narrator | `gpt-6.1-sol`, low reasoning effort, 768 px frames | Writes one short sentence. About 1.5 s. |
 | Verifier | Decisions API, `gpt-6-luna` | Checks sentences against the image in street mode and the judge-based path. Continuous screen commentary uses the narrator's confidence and freshness checks. |
-| Voice | `gpt-4o-mini-tts`, voice `marin` | Streamed directly to the phone in production. Local runs can prepare the voice during verification. |
+| Voice | `gpt-4o-mini-tts`, voice `marin` | Direct streaming by default. The phone can preload one next phrase during a sufficiently long current playback. Local runs can prepare the voice during verification. |
 
 - **Camera only, no microphone.** On iPhone, opening the microphone in the browser disrupts audio output, especially with Bluetooth earbuds.
-- **The phone does the cheap work.** It compares frames locally, with a finer grid for small changes in screen commentary. Still pictures are checked less often, with a periodic refresh for new text.
+- **The phone does the cheap work.** It compares frames locally, with a finer grid for small changes in screen commentary and street mode. Still pictures are checked less often, with a periodic refresh for new text.
 - **Fallbacks.** If the Decisions API is unavailable, Sol answers the same questions in strict JSON. If streaming audio fails, the full audio file is used.
 - **Stateless production audio.** Each audio request keeps its OpenAI stream in the same HTTP response. Production does not rely on a voice prepared in another server instance. Remote debug events are sent only when the server can record them locally.
+- **Bounded phone preloading.** If the current playback has at least 1.5 seconds of known remaining audio, the phone can fetch one next phrase in advance and reuse the same unlocked audio element. Unknown or short durations keep direct streaming. Pending audio downloads are cancelled on stop or replacement. The benefit depends on the browser reporting a usable duration; it still needs an iPhone trial.
 - **Headset controls.** Media Session exposes playback commands to compatible headsets. VoiceOver labels are set on every control; physical iPhone and AirPods validation is still needed for the latest changes.
 - **Two languages.** The interface and the voice work in French and English.
 
