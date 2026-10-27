@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent } from "react";
 import { captureGrid, captureJpeg, gridDiff, type Grid } from "@/lib/client/vision";
 import { Speaker } from "@/lib/client/speaker";
 import { overlap } from "@/lib/client/text";
@@ -199,6 +199,9 @@ export default function Murmure() {
   const [keyDraft, setKeyDraft] = useState("");
   const [keyState, setKeyState] = useState<"idle" | "checking" | "format" | "refused" | "unreachable">("idle");
   const [codeDraft, setCodeDraft] = useState("");
+  const [accessReady, setAccessReady] = useState(false); // « c'est bon, tu peux commencer », après une clé ou un code
+  const byokDialogRef = useRef<HTMLDialogElement>(null);
+  const byokReturnRef = useRef<HTMLElement | null>(null); // le bouton touché, qui reprend le focus à la fermeture
   const vitesseRef = useRef<"eco" | "rapide">("eco");
   const languageRef = useRef<Language>("fr");
 
@@ -379,6 +382,8 @@ export default function Murmure() {
       }
       setKeyDraft("");
       setKeyState("idle");
+      setAccessReady(true);
+      closeByok();
       loadAccess(codeRef.current);
     } catch {
       setKeyState("unreachable");
@@ -398,7 +403,21 @@ export default function Murmure() {
     codeRef.current = code;
     speaker.current.code = code;
     setCodeDraft("");
+    setAccessReady(true);
+    closeByok();
     loadAccess(code);
+  }
+
+  // Sans clé ni code, toucher un mode ouvre la fenêtre BYOK au lieu de démarrer.
+  function openByok(from: HTMLElement) {
+    byokReturnRef.current = from;
+    setAccessReady(false);
+    byokDialogRef.current?.showModal();
+    document.getElementById("byok-key")?.focus(); // VoiceOver commence par le champ de la clé
+  }
+
+  function closeByok() {
+    byokDialogRef.current?.close();
   }
 
   useEffect(() => {
@@ -1332,6 +1351,12 @@ export default function Murmure() {
         : null;
   const visibleProblem = accessIssue ?? (problem?.kind === "access" ? accessProblem(language) : problem);
   const canStart = access === "ok";
+  // Démarre si l'accès est bon, sinon ouvre la fenêtre BYOK.
+  const startOr = (action: () => void) => (e: MouseEvent<HTMLButtonElement>) => {
+    if (canStart) action();
+    else if (showByok) openByok(e.currentTarget);
+  };
+  const canTouch = canStart || showByok;
 
   return (
     <main className={running ? "app is-running" : "app"}>
@@ -1366,9 +1391,113 @@ export default function Murmure() {
             </div>
           )}
           {access === "checking" && <p className="checking">{t(language, "checkingAccess")}</p>}
-          {showByok && (
-            <section className="byok" aria-labelledby="byok-title">
-              <h2 id="byok-title">{t(language, access === "nokey" ? "byokTitleNoKey" : "byokTitle")}</h2>
+          {accessReady && canStart && <p className="checking" role="status">{t(language, "accessReady")}</p>}
+          </div>
+
+          <div className="home-middle">
+          <div className="settings-card" aria-label={t(language, "settings")}>
+            {cams.length === 0 ? (
+              <button className="setting-row setting-button" onClick={() => void askCams()} aria-label={t(language, "chooseCamera")}>
+                <span>{t(language, "camera")}</span>
+                <span className="setting-value">
+                  {t(language, "chooseCamera")}
+                  <Arrow />
+                </span>
+              </button>
+            ) : (
+              <label className="setting-row">
+                <span>{t(language, "camera")}</span>
+                <select value={camId} onChange={(e) => chooseCam(e.target.value)}>
+                  <option value="">{t(language, "autoCamera")}</option>
+                  {cams.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <div className="setting-row" role="group" aria-label={t(language, "speed")}>
+              <span>{t(language, "speed")}</span>
+              <div className="seg">
+                <button aria-pressed={vitesse === "eco"} onClick={() => chooseVitesse("eco")} aria-label={t(language, "economicalAria")}>
+                  {t(language, "economical")}
+                </button>
+                <button aria-pressed={vitesse === "rapide"} onClick={() => chooseVitesse("rapide")} aria-label={t(language, "fastAria")}>
+                  {t(language, "fast")}
+                </button>
+              </div>
+            </div>
+            {byok ? (
+              <div className="setting-row">
+                <span>{t(language, "byokActive")}</span>
+                <button className="setting-value byok-remove" onClick={() => void removeKey()}>{t(language, "byokRemove")}</button>
+              </div>
+            ) : showByok && (
+              <button className="setting-row setting-button" onClick={(e) => openByok(e.currentTarget)}>
+                <span>{t(language, "byokActive")}</span>
+                <span className="setting-value">
+                  {t(language, "byokAdd")}
+                  <Arrow />
+                </span>
+              </button>
+            )}
+          </div>
+
+          <button className="demo-button" onClick={startOr(startDemo)} disabled={!canTouch}>
+            {t(language, "demo")}
+            <Arrow />
+          </button>
+
+          </div>
+
+          <div className="home-foot">
+          <div className="modes">
+            <button
+              ref={firstStartRef}
+              className="mode mode-main"
+              onClick={startOr(() => void start("ecran"))}
+              disabled={!canTouch}
+              aria-label={t(language, "screenModeAria")}
+            >
+              <span className="mode-icon" aria-hidden="true">
+                <i />
+                <i />
+                <b />
+              </span>
+              <span className="mode-text">
+                <span className="mode-title">{t(language, "screenMode")}</span>
+                <span className="mode-sub">{t(language, "screenModeSub")}</span>
+              </span>
+              <Arrow />
+            </button>
+
+            <button className="mode" onClick={startOr(() => void start("monde"))} disabled={!canTouch} aria-label={t(language, "aroundModeAria")}>
+              <span className="mode-icon mode-icon-around" aria-hidden="true">
+                <b />
+              </span>
+              <span className="mode-text">
+                <span className="mode-title">{t(language, "aroundMode")}</span>
+                <span className="mode-sub">{t(language, "aroundModeSub")}</span>
+              </span>
+              <Arrow />
+            </button>
+          </div>
+
+          <p className="fine">{t(language, "privacy")}</p>
+          </div>
+          <dialog
+            ref={byokDialogRef}
+            className="byok-dialog"
+            aria-labelledby="byok-title"
+            onClose={() => byokReturnRef.current?.focus()}
+            onClick={(e) => { if (e.target === e.currentTarget) closeByok(); }}
+          >
+            <section className="byok">
+              <div className="byok-head">
+                <h2 id="byok-title">{t(language, access === "nokey" ? "byokTitleNoKey" : "byokTitle")}</h2>
+                <button type="button" className="byok-close" onClick={closeByok} aria-label={t(language, "byokClose")}>×</button>
+              </div>
               <p>{t(language, "byokIntro")}</p>
               <form className="byok-form" onSubmit={(e) => void submitKey(e)}>
                 <label htmlFor="byok-key">{t(language, "byokLabel")}</label>
@@ -1410,93 +1539,7 @@ export default function Murmure() {
                 </form>
               )}
             </section>
-          )}
-          </div>
-
-          <div className="home-middle">
-          <div className="settings-card" aria-label={t(language, "settings")}>
-            {cams.length === 0 ? (
-              <button className="setting-row setting-button" onClick={() => void askCams()} aria-label={t(language, "chooseCamera")}>
-                <span>{t(language, "camera")}</span>
-                <span className="setting-value">
-                  {t(language, "chooseCamera")}
-                  <Arrow />
-                </span>
-              </button>
-            ) : (
-              <label className="setting-row">
-                <span>{t(language, "camera")}</span>
-                <select value={camId} onChange={(e) => chooseCam(e.target.value)}>
-                  <option value="">{t(language, "autoCamera")}</option>
-                  {cams.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            <div className="setting-row" role="group" aria-label={t(language, "speed")}>
-              <span>{t(language, "speed")}</span>
-              <div className="seg">
-                <button aria-pressed={vitesse === "eco"} onClick={() => chooseVitesse("eco")} aria-label={t(language, "economicalAria")}>
-                  {t(language, "economical")}
-                </button>
-                <button aria-pressed={vitesse === "rapide"} onClick={() => chooseVitesse("rapide")} aria-label={t(language, "fastAria")}>
-                  {t(language, "fast")}
-                </button>
-              </div>
-            </div>
-            {byok && (
-              <div className="setting-row">
-                <span>{t(language, "byokActive")}</span>
-                <button className="setting-value byok-remove" onClick={() => void removeKey()}>{t(language, "byokRemove")}</button>
-              </div>
-            )}
-          </div>
-
-          <button className="demo-button" onClick={startDemo} disabled={!canStart}>
-            {t(language, "demo")}
-            <Arrow />
-          </button>
-
-          </div>
-
-          <div className="home-foot">
-          <div className="modes">
-            <button
-              ref={firstStartRef}
-              className="mode mode-main"
-              onClick={() => void start("ecran")}
-              disabled={!canStart}
-              aria-label={t(language, "screenModeAria")}
-            >
-              <span className="mode-icon" aria-hidden="true">
-                <i />
-                <i />
-                <b />
-              </span>
-              <span className="mode-text">
-                <span className="mode-title">{t(language, "screenMode")}</span>
-                <span className="mode-sub">{t(language, "screenModeSub")}</span>
-              </span>
-              <Arrow />
-            </button>
-
-            <button className="mode" onClick={() => void start("monde")} disabled={!canStart} aria-label={t(language, "aroundModeAria")}>
-              <span className="mode-icon mode-icon-around" aria-hidden="true">
-                <b />
-              </span>
-              <span className="mode-text">
-                <span className="mode-title">{t(language, "aroundMode")}</span>
-                <span className="mode-sub">{t(language, "aroundModeSub")}</span>
-              </span>
-              <Arrow />
-            </button>
-          </div>
-
-          <p className="fine">{t(language, "privacy")}</p>
-          </div>
+          </dialog>
         </section>
       )}
 

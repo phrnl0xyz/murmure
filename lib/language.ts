@@ -85,6 +85,9 @@ const copy = {
     codeSubmit: "Valider le code",
     byokActive: "Clé OpenAI (BYOK)",
     byokRemove: "Supprimer ma clé",
+    byokAdd: "Ajouter",
+    byokClose: "Fermer",
+    accessReady: "C’est bon, tu peux commencer.",
   },
   en: {
     language: "Language",
@@ -166,6 +169,9 @@ const copy = {
     codeSubmit: "Use the code",
     byokActive: "OpenAI key (BYOK)",
     byokRemove: "Remove my key",
+    byokAdd: "Add",
+    byokClose: "Close",
+    accessReady: "All set, you can start.",
   },
 } as const;
 

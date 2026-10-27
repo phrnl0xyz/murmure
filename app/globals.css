@@ -322,3 +322,8 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--red); out
 .byok-links a { color: var(--fg); font-weight: 600; }
 .byok-code { padding-top: 10px; border-top: 1px solid var(--line); }
 .byok-remove { color: var(--red); }
+/* La carte BYOK s'ouvre en fenêtre par-dessus l'accueil. */
+.byok-dialog { width: min(460px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: auto; padding: 0; border: 0; border-radius: 18px; background: var(--card); color: var(--fg); overflow: auto; }
+.byok-dialog::backdrop { background: rgb(0 0 0 / 0.6); }
+.byok-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.byok-close { flex: none; width: 36px; height: 36px; border-radius: 50%; background: var(--bg); color: var(--fg); font-size: 20px; line-height: 1; }
