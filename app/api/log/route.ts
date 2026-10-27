@@ -1,10 +1,10 @@
-import { checkAccess } from "@/lib/server/guard";
+import { guarded } from "@/lib/server/guard";
 import { debugEnabled, debugSave } from "@/lib/server/debug";
 
 // Mode réglage : le téléphone envoie ici ce qu'il fait, pour comprendre un essai à distance.
-export async function POST(req: Request) {
-  const denied = checkAccess(req);
-  if (denied) return denied;
+export const POST = guarded(post);
+
+async function post(req: Request) {
   if (!debugEnabled()) return new Response(null, { status: 204 });
   try {
     const body = (await req.json()) as { event?: string; detail?: string };

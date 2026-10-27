@@ -1,4 +1,4 @@
-import { checkAccess, errorResponse } from "@/lib/server/guard";
+import { guarded, errorResponse } from "@/lib/server/guard";
 import { decisions, decisionsUnavailable, isMock, responsesJSON, SOL_MODEL } from "@/lib/server/openai";
 import { VERIFY_QUESTION, VERIFY_QUESTION_EN, VERIFY_QUESTION_MONDE, VERIFY_QUESTION_MONDE_EN, type Mode } from "@/lib/server/prompts";
 import { debugSave } from "@/lib/server/debug";
@@ -6,9 +6,9 @@ import type { Verification } from "@/lib/types";
 import { normalizeLanguage } from "@/lib/language";
 
 // Le vérificateur : la phrase correspond-elle exactement à l'écran ?
-export async function POST(req: Request) {
-  const denied = checkAccess(req);
-  if (denied) return denied;
+export const POST = guarded(post);
+
+async function post(req: Request) {
   const t0 = Date.now();
   try {
     const { image, texte, mode = "ecran", language: rawLanguage } = (await req.json()) as { image: string; texte: string; mode?: Mode; language?: string };

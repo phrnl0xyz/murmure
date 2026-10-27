@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { captureGrid, captureJpeg, gridDiff, type Grid } from "@/lib/client/vision";
 import { Speaker } from "@/lib/client/speaker";
 import { overlap } from "@/lib/client/text";
@@ -194,6 +194,11 @@ export default function Murmure() {
   const [language, setLanguage] = useState<Language>("fr");
   // Vérification au chargement : code d'accès et clé OpenAI. Tant que ce n'est pas « ok », on ne peut pas démarrer.
   const [access, setAccess] = useState<"checking" | "ok" | "missing" | "wrong" | "nokey" | "down">("checking");
+  // BYOK : la personne essaie avec sa propre clé OpenAI, rangée dans un cookie que la page ne lit pas.
+  const [byok, setByok] = useState(false);
+  const [keyDraft, setKeyDraft] = useState("");
+  const [keyState, setKeyState] = useState<"idle" | "checking" | "format" | "refused" | "unreachable">("idle");
+  const [codeDraft, setCodeDraft] = useState("");
   const vitesseRef = useRef<"eco" | "rapide">("eco");
   const languageRef = useRef<Language>("fr");
 
@@ -346,15 +351,55 @@ export default function Murmure() {
     demoRef.current = v;
     urlDemoRef.current = v;
     setDemoVideo(v);
+    loadAccess(code);
+  }, [remote]);
+
+  function loadAccess(code: string) {
     void fetch("/api/access", { method: "POST", headers: { "x-murmure-code": code } })
-      .then((r) => r.json() as Promise<{ code: "ok" | "missing" | "wrong"; openai: boolean; debug?: boolean; voicePreparation?: boolean }>)
+      .then((r) => r.json() as Promise<{ code: "ok" | "missing" | "wrong"; openai: boolean; byok?: boolean; debug?: boolean; voicePreparation?: boolean }>)
       .then((a) => {
         remoteEnabled.current = a.code === "ok" && a.debug === true;
         speaker.current.preparationEnabled = a.code === "ok" && a.voicePreparation === true;
+        setByok(a.byok === true);
         setAccess(a.code !== "ok" ? a.code : a.openai ? "ok" : "nokey");
       })
       .catch(() => setAccess("down"));
-  }, [remote]);
+  }
+
+  // BYOK : le serveur vérifie la clé auprès d'OpenAI, puis la range dans le cookie du téléphone.
+  async function submitKey(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setKeyState("checking");
+    try {
+      const r = await fetch("/api/access", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: keyDraft }) });
+      if (!r.ok) {
+        const j = (await r.json().catch(() => ({}))) as { error?: string };
+        setKeyState(j.error === "format" || j.error === "refused" ? j.error : "unreachable");
+        return;
+      }
+      setKeyDraft("");
+      setKeyState("idle");
+      loadAccess(codeRef.current);
+    } catch {
+      setKeyState("unreachable");
+    }
+  }
+
+  async function removeKey() {
+    await fetch("/api/access", { method: "DELETE" }).catch(() => {});
+    loadAccess(codeRef.current);
+  }
+
+  function submitCode(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const code = codeDraft.trim();
+    if (!code) return;
+    try { localStorage.setItem("murmure-code", code); } catch {}
+    codeRef.current = code;
+    speaker.current.code = code;
+    setCodeDraft("");
+    loadAccess(code);
+  }
 
   useEffect(() => {
     detailRef.current = detail;
@@ -1277,16 +1322,14 @@ export default function Murmure() {
   const said = entries.filter((e) => e.kind === "dit");
   const comments = said.slice(0, 4).reverse();
   const showSoundTip = running && elapsed < 20;
+  // Sans code ou sans clé sur le serveur, la carte BYOK propose d'essayer avec sa propre clé.
+  const showByok = access === "missing" || access === "wrong" || access === "nokey";
   const accessIssue: Problem | null =
-    access === "missing"
-      ? accessProblem(language)
-      : access === "wrong"
-        ? { title: t(language, "wrongCodeTitle"), body: t(language, "wrongCodeBody") }
-        : access === "nokey"
-          ? { title: t(language, "noKeyTitle"), body: t(language, "noKeyBody") }
-          : access === "down"
-            ? { title: t(language, "serverDownTitle"), body: t(language, "serverDownBody") }
-            : null;
+    access === "wrong"
+      ? { title: t(language, "wrongCodeTitle"), body: t(language, "wrongCodeBody") }
+      : access === "down"
+        ? { title: t(language, "serverDownTitle"), body: t(language, "serverDownBody") }
+        : null;
   const visibleProblem = accessIssue ?? (problem?.kind === "access" ? accessProblem(language) : problem);
   const canStart = access === "ok";
 
@@ -1323,6 +1366,51 @@ export default function Murmure() {
             </div>
           )}
           {access === "checking" && <p className="checking">{t(language, "checkingAccess")}</p>}
+          {showByok && (
+            <section className="byok" aria-labelledby="byok-title">
+              <h2 id="byok-title">{t(language, access === "nokey" ? "byokTitleNoKey" : "byokTitle")}</h2>
+              <p>{t(language, "byokIntro")}</p>
+              <form className="byok-form" onSubmit={(e) => void submitKey(e)}>
+                <label htmlFor="byok-key">{t(language, "byokLabel")}</label>
+                <div className="byok-row">
+                  <input
+                    id="byok-key"
+                    type="password"
+                    autoComplete="off"
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    placeholder="sk-…"
+                    value={keyDraft}
+                    onChange={(e) => { setKeyDraft(e.target.value); if (keyState !== "checking") setKeyState("idle"); }}
+                    aria-describedby="byok-trust"
+                  />
+                  <button type="submit" disabled={keyState === "checking" || !keyDraft.trim()}>{t(language, "byokSubmit")}</button>
+                </div>
+                {keyState === "checking" && <p className="fine" role="status">{t(language, "byokChecking")}</p>}
+                {(keyState === "format" || keyState === "refused" || keyState === "unreachable") && (
+                  <p className="byok-error" role="alert">
+                    {t(language, keyState === "format" ? "byokFormat" : keyState === "refused" ? "byokRefused" : "byokUnreachable")}
+                  </p>
+                )}
+              </form>
+              <p id="byok-trust" className="fine">{t(language, "byokTrust")}</p>
+              <p className="fine">{t(language, "byokTip")}</p>
+              <p className="byok-links">
+                <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">{t(language, "byokCreate")}</a>
+                <a href="https://github.com/phrnl0xyz/murmure" target="_blank" rel="noreferrer">{t(language, "byokSource")}</a>
+              </p>
+              {access !== "nokey" && (
+                <form className="byok-form byok-code" onSubmit={submitCode}>
+                  <label htmlFor="access-code">{t(language, "codeLabel")}</label>
+                  <div className="byok-row">
+                    <input id="access-code" type="text" autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} value={codeDraft} onChange={(e) => setCodeDraft(e.target.value)} />
+                    <button type="submit" disabled={!codeDraft.trim()}>{t(language, "codeSubmit")}</button>
+                  </div>
+                </form>
+              )}
+            </section>
+          )}
           </div>
 
           <div className="home-middle">
@@ -1359,6 +1447,12 @@ export default function Murmure() {
                 </button>
               </div>
             </div>
+            {byok && (
+              <div className="setting-row">
+                <span>{t(language, "byokActive")}</span>
+                <button className="setting-value byok-remove" onClick={() => void removeKey()}>{t(language, "byokRemove")}</button>
+              </div>
+            )}
           </div>
 
           <button className="demo-button" onClick={startDemo} disabled={!canStart}>

@@ -1,4 +1,4 @@
-import { checkAccess, errorResponse } from "@/lib/server/guard";
+import { guarded, errorResponse } from "@/lib/server/guard";
 import { isMock, openaiFetch } from "@/lib/server/openai";
 import { debugSave } from "@/lib/server/debug";
 import { speechBody, streamPrepared } from "@/lib/server/voice-cache";
@@ -16,9 +16,9 @@ async function voice(texte: string, signal: AbortSignal, language: "fr" | "en"):
 }
 
 // POST : le téléphone reçoit le fichier entier (chemin de secours).
-export async function POST(req: Request) {
-  const denied = checkAccess(req);
-  if (denied) return denied;
+export const POST = guarded(post);
+
+async function post(req: Request) {
   try {
     const { texte, language: rawLanguage } = (await req.json()) as { texte: string; language?: string };
     return await voice(texte, req.signal, normalizeLanguage(rawLanguage));
@@ -29,10 +29,11 @@ export async function POST(req: Request) {
 
 // GET : lu directement par l'élément <audio>, qui joue le son au fur et à mesure qu'il arrive.
 // Un élément <audio> ne peut pas envoyer d'en-tête : le code d'accès passe dans l'adresse.
-export async function GET(req: Request) {
+// La clé BYOK, elle, n'y passe jamais : elle arrive par son cookie.
+export const GET = guarded(get, (req) => new URL(req.url).searchParams.get("k"));
+
+async function get(req: Request) {
   const url = new URL(req.url);
-  const code = process.env.MURMURE_CODE;
-  if (code && url.searchParams.get("k") !== code) return Response.json({ error: "Code d'accès requis" }, { status: 401 });
   try {
     const language = normalizeLanguage(url.searchParams.get("language"));
     // Voix préparée pendant la vérification : on sert ce qui est déjà prêt, puis la suite.

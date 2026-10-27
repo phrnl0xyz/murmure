@@ -1,4 +1,4 @@
-import { checkAccess, errorResponse } from "@/lib/server/guard";
+import { guarded, errorResponse } from "@/lib/server/guard";
 import { overlap } from "@/lib/client/text";
 import type { Description, Observation, Verdict, Verification } from "@/lib/types";
 import { POST as judge } from "../judge/route";
@@ -7,9 +7,9 @@ import { POST as verify } from "../verify/route";
 
 // Une seule image traverse la connexion mobile. Les étapes existantes sont appelées
 // directement dans la même requête serveur, sans relais HTTP ni cache partagé.
-export async function POST(req: Request) {
-  const denied = checkAccess(req);
-  if (denied) return denied;
+export const POST = guarded(post);
+
+async function post(req: Request) {
   const ctrl = new AbortController();
   const cancel = () => ctrl.abort(req.signal.reason);
   req.signal.addEventListener("abort", cancel, { once: true });
@@ -22,6 +22,8 @@ export async function POST(req: Request) {
     const headers = new Headers({ "Content-Type": "application/json" });
     const code = req.headers.get("x-murmure-code");
     if (code) headers.set("x-murmure-code", code);
+    const cookie = req.headers.get("cookie"); // porte la clé BYOK jusqu'aux étapes
+    if (cookie) headers.set("cookie", cookie);
     const invoke = (handler: (r: Request) => Promise<Response>, path: string, payload: unknown) => {
       if (ctrl.signal.aborted) throw ctrl.signal.reason;
       return handler(new Request(new URL(path, req.url), { method: "POST", headers, body: JSON.stringify(payload), signal: ctrl.signal }));

@@ -5,6 +5,8 @@ Point your phone at the TV, or hold it against your chest in the street. Murmure
 
 Built for the OpenAI DevDay Community Hackathon Paris, October 2026. Tracks: Impact, Build in public.
 
+**Try it:** [murmure-devday.vercel.app](https://murmure-devday.vercel.app), on a phone with earbuds, with your own OpenAI key (BYOK, see below).
+
 ## Why
 
 1.7 million people in France live with a visual impairment. In front of a football match they hear the crowd explode, but not why. In front of the weather forecast, "red alert here" means nothing if you cannot see the map. Audio description exists for some films, almost never for live TV, and never for the street.
@@ -69,8 +71,17 @@ The narrator uses the `fast` service tier by default (« Économique »). Earlie
 
 - Frames are sent to OpenAI for analysis and are not stored by Murmure.
 - No microphone is used.
-- The OpenAI key stays on the server.
-- API routes are protected by an access code (`MURMURE_CODE`). Open the app with `?code=...`, and the code is then remembered on the phone.
+- The server's OpenAI key stays on the server. A BYOK key stays in a cookie on your phone and is only used for your own requests.
+- API routes need either the access code (`MURMURE_CODE`) or a BYOK key. Open the app with `?code=...`, and the code is then remembered on the phone.
+
+## Try it with your own OpenAI key (BYOK)
+
+BYOK means "Bring Your Own Key": you test Murmure on the public site with your own OpenAI API key, and your OpenAI account pays for the calls, about $5 per hour of use.
+
+- Paste the key on the home screen. The server checks it with a free OpenAI call (`GET /v1/models`).
+- The key is kept on your phone in an `HttpOnly`, `SameSite=Strict` cookie limited to `/api`. The page's JavaScript cannot read it, and it never appears in a URL.
+- On each request, the server uses it only for that request's OpenAI calls. It is never stored on the server or written to logs; error messages are scrubbed of anything that looks like a key.
+- "Remove my key" deletes the cookie. Best practice: create a key just for the trial, with a low spending limit, and revoke it afterward.
 
 ## Run it
 

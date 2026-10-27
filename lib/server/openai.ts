@@ -1,4 +1,6 @@
 // Appels bruts à l'API OpenAI. La clé reste côté serveur.
+import { currentKey } from "./guard";
+
 const BASE = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
 
 export class OpenAIError extends Error {
@@ -13,7 +15,7 @@ export class OpenAIError extends Error {
 export const isMock = () => process.env.MURMURE_MOCK === "1";
 
 export async function openaiFetch(path: string, body: unknown, signal?: AbortSignal): Promise<Response> {
-  const key = process.env.OPENAI_API_KEY;
+  const key = currentKey();
   if (!key) throw new OpenAIError(500, "OPENAI_API_KEY manquante");
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
@@ -23,6 +25,14 @@ export async function openaiFetch(path: string, body: unknown, signal?: AbortSig
   });
   if (!res.ok) throw new OpenAIError(res.status, await res.text());
   return res;
+}
+
+/** Vérifie une clé BYOK par un appel gratuit : true si OpenAI l'accepte, false si elle est refusée. */
+export async function keyAccepted(key: string): Promise<boolean> {
+  const res = await fetch(`${BASE}/models`, { headers: { Authorization: `Bearer ${key}` } });
+  if (res.ok) return true;
+  if (res.status === 401 || res.status === 403) return false;
+  throw new OpenAIError(res.status, "Vérification de la clé impossible");
 }
 
 type ImageUrl = string; // data URL base64 ou URL https publique

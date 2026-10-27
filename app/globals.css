@@ -305,3 +305,20 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--red); out
   .demo-button { min-height: 44px; }
   .fine { font-size: 11px; }
 }
+
+/* BYOK : essayer avec sa propre clé OpenAI. */
+.byok { display: flex; flex-direction: column; gap: 10px; background: var(--card); border-radius: 16px; padding: 16px; font-size: 14px; line-height: 1.45; color: var(--muted); }
+.byok h2 { margin: 0; font-size: 17px; line-height: 1.25; color: var(--fg); }
+.byok p { margin: 0; }
+.byok-form { display: flex; flex-direction: column; gap: 6px; }
+.byok-form label { font-weight: 600; color: var(--fg); }
+.byok-row { display: flex; gap: 8px; }
+.byok-row input { flex: 1; min-width: 0; height: 44px; padding: 0 12px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); font: inherit; font-size: 16px; }
+.byok-row input:focus-visible { outline: 2px solid var(--red); outline-offset: 1px; }
+.byok-row button { height: 44px; padding: 0 14px; border-radius: 10px; background: var(--fg); color: var(--bg); font-weight: 600; font-size: 14px; white-space: nowrap; }
+.byok-row button:disabled { opacity: 0.4; }
+.byok-error { color: var(--red); font-weight: 600; }
+.byok-links { display: flex; flex-wrap: wrap; gap: 16px; }
+.byok-links a { color: var(--fg); font-weight: 600; }
+.byok-code { padding-top: 10px; border-top: 1px solid var(--line); }
+.byok-remove { color: var(--red); }

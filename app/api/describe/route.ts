@@ -1,4 +1,4 @@
-import { checkAccess, errorResponse } from "@/lib/server/guard";
+import { guarded, errorResponse } from "@/lib/server/guard";
 import { isMock, responsesJSON, SOL_MODEL } from "@/lib/server/openai";
 import { DESCRIBE_SCHEMA, describeInstructions, type Mode } from "@/lib/server/prompts";
 import type { Description } from "@/lib/types";
@@ -24,9 +24,9 @@ const DEMO_SCRIPT: Record<Language, string[]> = {
 };
 
 // Le conteur : GPT-6.1 Sol écrit la phrase à chuchoter.
-export async function POST(req: Request) {
-  const denied = checkAccess(req);
-  if (denied) return denied;
+export const POST = guarded(post);
+
+async function post(req: Request) {
   const t0 = Date.now();
   try {
     const { image, recent = [], detail = "sobre", demoTime, bench, mode = "ecran", vitesse, language: rawLanguage } = (await req.json()) as {
