@@ -98,3 +98,7 @@ npm run dev
 OpenAI models only: Decisions API (`gpt-6-luna`), GPT-6.1 Sol, `gpt-4o-mini-tts`, with GPT-Live evaluated.
 The project was finished with OpenAI Codex.
 Stack: Next.js 16, React 19, TypeScript.
+
+## License
+
+MIT. See [LICENSE](LICENSE). Bring your own OpenAI API key.
